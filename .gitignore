@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+*.pyc
+logs/
+storage/chats/
+storage/settings.json
+*.tmp
+.pytest_cache/
+storage/tmp/
+*.wav
+*.log
+ollama/
+.idea/
+.vscode/
+
+# голосовые модели Piper (большие файлы, ставятся по README)
+resources/voices/*.onnx
+resources/voices/*.onnx.json
+resources/voices/*.pt
+
+# ярлык запуска (полные пути этого компьютера) и замок единственного экземпляра
+*.lnk
+storage/sirius.lock
