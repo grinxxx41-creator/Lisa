@@ -9,6 +9,21 @@
 **Подходит любая локальная нейросеть из Ollama**: Qwen, Llama, Gemma, DeepSeek, Mistral и другие.
 По умолчанию — Qwen 3 8B, но модель меняется одной строкой в настройках.
 
+![Рабочее пространство SIRIUS](docs/images/workspace.jpg)
+
+<p align="center">
+  <img src="docs/images/boot.gif" width="560" alt="Экран загрузки">
+  <img src="docs/images/chat.gif" width="250" alt="Ответ LISA в чате">
+</p>
+
+| Графики мониторинга | Ответ LISA |
+|---|---|
+| ![Графики](docs/images/charts.jpg) | ![Чат](docs/images/chat.jpg) |
+
+Компактный режим — полоска у верхнего края экрана:
+
+![Компактный режим](docs/images/compact.png)
+
 ## Возможности
 
 - **Рабочее пространство.** В центре — LISA, вокруг — плавающие панели: CHAT, CODE, SYSTEM,
