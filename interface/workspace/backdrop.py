@@ -235,6 +235,11 @@ class WorkspaceBackdrop(QWidget):
         self._timer.setSingleShot(True)
         self._timer.setInterval(self.REBUILD_DELAY_MS)
         self._timer.timeout.connect(self._rebuild)
+        styles.notifier().changed.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self, _name: str) -> None:
+        if self._pixmap is not None:
+            self._rebuild()
 
     def _dpr(self) -> float:
         return float(self.devicePixelRatioF()) or 1.0

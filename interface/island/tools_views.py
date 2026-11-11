@@ -301,44 +301,9 @@ class PomodoroPage(QWidget):
         self.reset_btn.setEnabled(state != IDLE)
 
 
-class ActionsPage(QWidget):
-    triggered = Signal(str)
-    COLUMNS = 4
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
-        self._grid = QGridLayout()
-        self._grid.setHorizontalSpacing(8)
-        self._grid.setVerticalSpacing(8)
-        lay.addLayout(self._grid)
-        lay.addStretch(1)
-        self.status = label("Свои действия добавляются в настройках: вкладка «Островок»", "isSub", elided=True)
-        lay.addWidget(self.status)
-
-    def set_actions(self, actions) -> None:
-        while self._grid.count():
-            item = self._grid.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
-        for index, action in enumerate(actions):
-            chip = Chip(action.title, action.icon)
-            chip.setToolTip(action.hint)
-            chip.clicked.connect(lambda _checked=False, a=action.id: self.triggered.emit(a))
-            self._grid.addWidget(chip, index // self.COLUMNS, index % self.COLUMNS, Qt.AlignmentFlag.AlignLeft)
-        self._grid.setColumnStretch(self.COLUMNS, 1)
-
-    def set_status(self, text: str, ok: bool = True) -> None:
-        self.status.setText(text)
-        self.status.setStyleSheet(f"color: {TEXT_SECONDARY if ok else WARNING};")
-
-
 class ToolsView(QWidget):
     HEIGHT = 168
-    TABS = (("shelf", "Полка", "shelf"), ("clipboard", "Буфер", "clipboard"),
-            ("pomodoro", "Pomodoro", "timer"), ("actions", "Действия", "bolt"))
+    TABS = (("shelf", "Полка", "shelf"), ("clipboard", "Буфер", "clipboard"), ("pomodoro", "Pomodoro", "timer"))
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -350,9 +315,7 @@ class ToolsView(QWidget):
         self.shelf = ShelfPage()
         self.clipboard = ClipboardPage()
         self.pomodoro = PomodoroPage()
-        self.actions = ActionsPage()
-        self.pages = {"shelf": self.shelf, "clipboard": self.clipboard, "pomodoro": self.pomodoro,
-                      "actions": self.actions}
+        self.pages = {"shelf": self.shelf, "clipboard": self.clipboard, "pomodoro": self.pomodoro}
         self.stack = QStackedWidget()
         self.chips: dict[str, Chip] = {}
         for key, title, glyph in self.TABS:

@@ -50,7 +50,9 @@ def test_settings_defaults_and_validation():
     assert cfg["theme"] == "graphite" and cfg["enabled"] is True and cfg["animation_speed"] == 150
     assert cfg["position"] == "top", "своё место без координат невозможно"
     assert cfg["custom_actions"] == [{"title": "Проект", "target": "D:\\x"}] and "неизвестно" not in cfg
-    assert normalize({"position": "custom", "custom_pos": [300, 40]})["position"] == "custom"
+    assert normalize({"position": "custom", "custom_pos": [300, 40]})["position"] == "top", "островок закреплён сверху"
+    assert normalize({"position": "bottom"})["position"] == "top"
+    assert cfg["mini"] is True and cfg["weather"] is True and cfg["weather_city"] == ""
 
 
 def test_old_settings_without_island_section_still_load(tmp_path):
@@ -331,14 +333,16 @@ def test_bar_keeps_compact_mode_interface(bar, qt_app):
 
 def test_bar_expands_and_collapses_per_state(bar, qt_app):
     compact = bar.geometry()
-    assert compact.height() == bar._row_h + 8 and not bar.body.isVisible()
-    pages = {IslandState.EXPANDED: bar.hub, IslandState.MEDIA: bar.media_view, IslandState.SYSTEM: bar.system_view,
+    assert compact.height() == bar.mini.HEIGHT + 8 and not bar.body.isVisible(), "свёрнутый островок — мини-капсула"
+    assert bar.mini.isVisible() and not bar.row.isVisible() and compact.width() < 260
+    pages = {IslandState.CONTROL: bar.control, IslandState.WEATHER: bar.weather_view, IslandState.EXPANDED: bar.hub, IslandState.MEDIA: bar.media_view, IslandState.SYSTEM: bar.system_view,
              IslandState.NOTIFICATION: bar.notes_list, IslandState.INTERACTIVE: bar.tools}
     for state, page in pages.items():
         assert bar.states.open(state)
         assert bar.pages.currentWidget() is page and bar.nav.isVisible() and bar.body.isVisible()
         assert bar.geometry().height() == bar._row_h + 8 + bar.nav.HEIGHT + page.HEIGHT + 14
-        assert bar.geometry().top() == compact.top() and bar.geometry().center().x() == compact.center().x()
+        assert bar.geometry().top() == compact.top() and abs(bar.geometry().center().x() - compact.center().x()) <= 1
+        assert bar.row.isVisible() and not bar.mini.isVisible()
         assert bar.row.geometry().height() == bar._row_h, "строка капсулы не меняется при раскрытии"
     assert bar.states.flash(IslandState.VOLUME, None, 5000)
     assert bar.pages.currentWidget() is bar.indicator and not bar.nav.isVisible()
@@ -398,61 +402,77 @@ def test_bar_animated_transitions_settle(qt_app):
 def test_bar_config_position_size_and_classic_mode(qt_app):
     from interface.compact_bar import MARGIN, CompactBar
 
-    bar = CompactBar(config={"animations": False, "height": 56, "width": 700, "position": "bottom"})
+    # mini=False — прежняя длинная строка; «снизу» больше нет: островок закреплён у верхнего края
+    bar = CompactBar(config={"animations": False, "height": 56, "width": 700, "position": "bottom", "mini": False})
     bar.place_on_screen()
     bar.show()
     qt_app.processEvents()
     bar.states.hold(False)
     area = bar.screen().availableGeometry()
+    assert bar.config()["position"] == "top"
     assert bar.geometry().height() == 56 + 2 * MARGIN and bar.geometry().width() == 700 + 2 * MARGIN
-    bottom = bar.geometry().bottom()
-    assert area.bottom() - bottom < 12, "островок у нижнего края"
+    top = bar.geometry().top()
+    assert top - area.top() < 12, "островок у верхнего края"
+    assert bar.row.isVisible() and not bar.mini.isVisible()
     bar.states.open(IslandState.MEDIA)
-    assert bar.geometry().bottom() == bottom, "у нижнего края капсула раскрывается вверх"
-    assert bar.row.geometry().top() > bar.body.geometry().top()
+    assert bar.geometry().top() == top, "капсула раскрывается вниз"
+    assert bar.row.geometry().top() < bar.body.geometry().top()
     cfg = bar.config()
     cfg.update(position="top-right", enabled=False)
     bar.apply_config(cfg)
     assert bar.states.state is IslandState.COMPACT and not bar.states.open(IslandState.MEDIA)
     assert bar.menu_btn.isHidden() and area.right() - bar.geometry().right() < 12
     cfg.update(enabled=True, media=False, shelf=False, clipboard=False, pomodoro=False, actions=False,
-               notifications=False)
+               notifications=False, weather=False)
     bar.apply_config(cfg)
     assert bar.nav.chips[IslandState.MEDIA].isHidden() and bar.nav.chips[IslandState.INTERACTIVE].isHidden()
+    assert bar.nav.chips[IslandState.CONTROL].isHidden() and bar.nav.chips[IslandState.WEATHER].isHidden()
     assert bar.nav.chips[IslandState.NOTIFICATION].isHidden() and not bar.nav.chips[IslandState.SYSTEM].isHidden()
     bar.close()
 
 
-def test_bar_drag_remembers_position(qt_app):
-    from interface.compact_bar import CompactBar
+def test_mini_capsule_click_opens_control_and_island_stays_pinned(bar, qt_app):
+    from monitoring.winrt_bridge import MediaInfo
 
-    bar = CompactBar(config={"animations": False, "width": 640})     # уже экрана: есть куда двигать
-    bar.place_on_screen()
-    bar.show()
-    qt_app.processEvents()
-    bar.states.hold(False)
+    start = bar.geometry()
     moved = []
     bar.position_changed.connect(moved.append)
-    start = bar.geometry()
-    free = QPoint(bar.reply.geometry().center().x(), bar.height() // 2)      # свободное место строки
-    QTest.mousePress(bar, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, free)
-    QTest.mouseMove(bar, free + QPoint(-60, 90))
-    QTest.mouseRelease(bar, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, free + QPoint(-60, 90))
-    assert moved and moved[0]["position"] == "custom"
-    assert bar.geometry().top() == start.top() + 90 and bar.geometry().left() == start.left() - 60
-    assert bar.config()["custom_pos"] == moved[0]["custom_pos"]
-    bar.states.open(IslandState.SYSTEM)
-    assert bar.geometry().top() == start.top() + 90, "раскрытие идёт от нового места"
-    QTest.mouseClick(bar, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, free)
-    assert len(moved) == 1, "щелчок без движения положение не меняет"
-    bar.close()
+    centre = QPoint(bar.width() // 2, bar.height() // 2)
+    QTest.mousePress(bar, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre)
+    QTest.mouseMove(bar, centre + QPoint(-60, 90))
+    QTest.mouseRelease(bar, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre + QPoint(-60, 90))
+    assert bar.geometry() == start and not moved, "островок закреплён: перетаскивание его не двигает"
+    assert bar.states.state is IslandState.COMPACT, "отпускание мыши вне капсулы ничего не открывает"
+    QTest.mouseClick(bar, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre)
+    assert bar.states.state is IslandState.CONTROL and bar.pages.currentWidget() is bar.control, "главная вкладка — пульт"
+    assert bar.geometry().width() > 600 and bar.row.isVisible()
+    bar.states.close()
+    assert bar.geometry() == start and bar.mini.isVisible() and not bar.row.isVisible()
+    # время есть всегда; пока играет музыка — рядом с ним эквалайзер
+    mini = bar.mini
+    assert len(mini.time.text()) == 5 and mini.time.text()[2] == ":" and not mini.time.isHidden()
+    assert mini.temp.isHidden() and mini.visualizer.isHidden()
+    bar.set_media(MediaInfo("x.exe", "X", "Песня", "Автор", "", "playing", 1.0, 100.0, time.time()))
+    assert mini.shows_equalizer() and not mini.visualizer.isHidden() and not mini.time.isHidden()
+    bar.push_audio_level(0.8)
+    assert not mini.visualizer.is_silent()
+    bar.set_media(MediaInfo("x.exe", "X", "Песня", "Автор", "", "paused", 1.0, 100.0, time.time()))
+    assert not mini.shows_equalizer() and not mini.time.isHidden() and mini.visualizer.is_silent()
+    bar.set_unread(2)
+    assert not mini.dot.isHidden()
+    cfg = bar.config()
+    cfg["actions"] = False
+    bar.apply_config(cfg)
+    QTest.mouseClick(bar, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     QPoint(bar.width() // 2, bar.height() // 2))
+    assert bar.states.state is IslandState.EXPANDED, "без пульта щелчок открывает LISA"
 
 
 def test_bar_row_never_overflows(qt_app):
     from interface.compact_bar import CompactBar
     from monitoring.winrt_bridge import MediaInfo
 
-    bar = CompactBar(config={"animations": False, "width": 640})
+    bar = CompactBar(config={"animations": False, "width": 640, "mini": False})
     bar.place_on_screen()
     bar.show()
     bar.set_voice(False)
@@ -692,7 +712,15 @@ def test_controller_actions_and_battery_events(island, qt_app, tmp_path, monkeyp
     island.run_action("explorer")
     island.run_action("нет такого")
     assert requested == ["settings"] and opened == [str(tmp_path), str(Path.home())]
-    assert "открыт" in bar.tools.actions.status.text().lower()
+    assert "открыт" in bar.control.status.text().lower()
+    island.run_action("wifi")
+    assert opened[-1] == "ms-settings:network-wifi" and "параметры" in bar.control.status.text().lower()
+    assert {"voice", "heavy", "wifi", "bluetooth", "custom:0"} <= set(bar.control.tiles)
+    bar.set_voice(True)
+    assert bar.control.tiles["voice"].button.is_active() and not bar.control.tiles["heavy"].button.is_active()
+    bar.control.tiles["new_chat"].button.click()
+    assert requested[-1] == "new_chat"
+    assert "actions" not in bar.tools.pages, "действия переехали из инструментов в пульт"
 
     snapshot = SystemSnapshot.__dataclass_fields__
     assert "battery" in snapshot
@@ -812,7 +840,7 @@ def test_window_island_settings_roundtrip(window, qt_app):
     tab.spins["width"].setValue(1000)
     tab.sliders["opacity"].setValue(70)
     tab.combos["theme"].setCurrentIndex(tab.combos["theme"].findData("black"))
-    tab.combos["position"].setCurrentIndex(tab.combos["position"].findData("bottom"))
+    tab.combos["position"].setCurrentIndex(tab.combos["position"].findData("top-right"))
     tab._add_action_item("Сайт", "https://example.org")
     values = dialog.values()
     assert values["island"]["width"] == 1000 and values["island"]["theme"] == "black"
@@ -820,16 +848,283 @@ def test_window_island_settings_roundtrip(window, qt_app):
     window._apply_settings(values)
     bar = window.compact_bar
     assert bar is not None and bar.isVisible() and window.isVisible(), "островок показан вместе с главным окном"
-    assert bar.config()["opacity"] == 70 and bar.config()["position"] == "bottom"
+    assert bar.config()["opacity"] == 70 and bar.config()["position"] == "top-right"
     assert window.island.actions()[-1].title == "Сайт"
     assert window.settings_store.load()["island"]["show_always"] is True, "настройки островка сохранены"
     window.enter_compact()
     window.leave_compact()
     assert bar.isVisible(), "в режиме «показывать всегда» островок остаётся на экране"
-    bar.position_changed.emit({"position": "custom", "custom_pos": [400, 300], "screen": ""})
-    assert window.settings_store.load()["island"]["custom_pos"] == [400, 300], "место после перетаскивания сохранено"
+    bar.weather_view.city_edit.setText("Казань")
+    bar.weather_view.save_btn.click()
+    assert window.settings_store.load()["island"]["weather_city"] == "Казань", "город из вкладки погоды сохранён"
+    assert window.island.cfg["weather_city"] == "Казань"
     values = dict(window.settings)
     values["island"] = dict(values["island"], show_always=False)
     window._apply_settings(values)
     assert not bar.isVisible()
     dialog.deleteLater()
+
+
+# --- громкость в «Медиа», погода ---
+
+def test_media_volume_bar_changes_volume(island, qt_app, monkeypatch):
+    from interface.island.controller import IslandController
+
+    bar = island.bar
+    view = bar.media_view
+    assert not view.volume_shown(), "пока громкость неизвестна, шкалы нет"
+    bar.set_volume(42.0, False)
+    assert view.volume_shown() and view.volume_value.text() == "42%"
+    bar.set_volume(None)
+    assert not view.volume_shown()
+
+    class FakeAudio:
+        def __init__(self):
+            self.level, self.ok = 40.0, True
+
+        def set_volume(self, percent):
+            if self.ok:
+                self.level = percent
+            return self.ok
+
+        def volume(self):
+            return self.level, False
+
+        def close(self):
+            pass
+
+    audio = FakeAudio()
+    island._audio = audio
+    view.volume_changed.emit(55.0)
+    assert audio.level == 40.0, "в тестах системные сервисы выключены: громкость не трогаем"
+    monkeypatch.setattr(IslandController, "SYSTEM_SERVICES", True)
+    flashed = []
+    bar.states.changed.connect(lambda state, payload: flashed.append(state))
+    view.volume_changed.emit(55.0)
+    assert audio.level == 55.0 and island._volume == (55, False)
+    assert IslandState.VOLUME not in flashed, "своё изменение не всплывает индикатором"
+    island._push_volume()
+    assert view.volume_shown()
+    audio.ok = False
+    messages = []
+    island.status_message.connect(messages.append)
+    view.volume_changed.emit(80.0)
+    assert audio.level == 55.0 and messages and "громкость" in messages[0].lower()
+    monkeypatch.setattr(IslandController, "SYSTEM_SERVICES", False)
+    island._audio = None
+
+
+def test_weather_parsing_and_format():
+    from monitoring import weather as w
+
+    assert w.format_temp(7.4) == "+7°" and w.format_temp(-2.6) == "−3°" and w.format_temp(0.2) == "0°"
+    assert w.format_temp(None) == "—"
+    assert w.describe(0) == ("Ясно", "sun") and w.describe(95)[1] == "storm" and w.describe("x")[1] == "cloud"
+    assert w.parse_geocode({"results": [{"latitude": 55.8, "longitude": 49.1, "name": "Казань"}]}) == (55.8, 49.1, "Казань")
+    assert w.parse_geocode({}) is None and w.parse_geocode({"results": [{"name": "x"}]}) is None
+    data = {"current": {"temperature_2m": -4.3, "apparent_temperature": -9.0, "weather_code": 71,
+                        "wind_speed_10m": 5.2, "relative_humidity_2m": 80},
+            "daily": {"time": ["2026-11-11", "2026-11-12", "плохо"], "temperature_2m_min": [-6, -8.5, 1],
+                      "temperature_2m_max": [-2, -3, None], "weather_code": [71, 3, 0]}}
+    weather = w.parse_forecast(data, "Казань")
+    assert weather.city == "Казань" and weather.temp == -4.3 and weather.icon == "snow" and weather.text == "Небольшой снег"
+    assert len(weather.days) == 2 and weather.days[1].weekday == "Чт" and weather.days[1].t_min == -8.5
+    with pytest.raises(w.WeatherError):
+        w.parse_forecast({"current": {}}, "Казань")
+    with pytest.raises(w.WeatherError):
+        w.parse_forecast("мусор", "Казань")
+
+
+def test_weather_tab_and_mini_capsule(island, qt_app):
+    from monitoring.weather import Day, Weather
+
+    bar = island.bar
+    view = bar.weather_view
+    assert bar.states.open(IslandState.WEATHER) and bar.pages.currentWidget() is view
+    assert view.stack.currentWidget() is view.setup, "без города показано поле для его ввода"
+    patches = []
+    island.settings_patch.connect(patches.append)
+    view.city_edit.setText("  Казань ")
+    view.save_btn.click()
+    assert patches == [{"weather_city": "Казань"}] and island.cfg["weather_city"] == "Казань"
+    assert island._weather is None, "в тестах запросов в интернет нет"
+
+    days = (Day("2026-11-11", -6, -2, 71), Day("2026-11-12", -8, -3, 3), Day("2026-11-13", -1, 2, 61))
+    weather = Weather("Казань", -4.3, -9.0, 71, 5.2, 80.0, days)
+    island._on_weather((("Казань", 55.8, 49.1, "Казань"), weather), "")
+    assert view.stack.currentWidget() is view.data and view.temp.text() == "−4°"
+    assert view.city.full_text() == "Казань" and "ветер 5 м/с" in view.details.full_text()
+    assert view.icon.kind() == "snow" and not view.grab().isNull()
+    shown = [c for c in view.day_columns if not c.isHidden()]
+    assert len(shown) == 2 and shown[0].name.text() == "Чт" and shown[1].icon.kind() == "rain"
+    bar.states.close()
+    assert not bar.mini.temp.isHidden() and bar.mini.temp.text() == "−4°" and bar.mini.icon.kind() == "snow"
+
+    island._on_weather(None, "Нет связи с сервисом погоды")
+    assert view.weather() is weather and "Нет связи" in view.updated.full_text(), "прежние данные остаются с пояснением"
+    island._on_weather((("Другой", 1.0, 2.0, "Другой"), weather), "")
+    assert island._weather_place[0] == "Казань", "ответ для прежнего города не подменяет новый"
+    cfg = dict(island.cfg, weather=False)
+    island.apply_settings(cfg)
+    assert bar.mini.temp.isHidden() and bar.nav.chips[IslandState.WEATHER].isHidden()
+
+
+def test_mini_equalizer_gets_levels_after_collapse(island, qt_app, monkeypatch):
+    """Уровень звука опрашивается и когда островок свёрнут в мини-капсулу (раньше опрос выключался)."""
+    from interface.island.controller import IslandController
+    from monitoring.winrt_bridge import MediaInfo
+
+    class FakeAudio:
+        def peak(self):
+            return 0.7
+
+        def volume(self):
+            return 50.0, False
+
+        def close(self):
+            pass
+
+    bar = island.bar
+    monkeypatch.setattr(IslandController, "SYSTEM_SERVICES", True)
+    island._audio = FakeAudio()
+    island._active = True
+    island._on_media(MediaInfo("x.exe", "X", "Песня", "Автор", "", "playing", 1.0, 100.0, time.time()))
+    assert island._meter_timer.isActive() and bar.mini.shows_equalizer()
+    bar.states.open(IslandState.MEDIA)
+    bar.states.close()                                    # обратно в мини-капсулу
+    assert bar.mini.isVisible() and island._meter_timer.isActive(), "опрос уровня не остановился"
+    island._poll_meter()
+    assert not bar.mini.visualizer.is_silent() and not bar.mini.time.isHidden()
+    island._on_media(MediaInfo("x.exe", "X", "Песня", "Автор", "", "paused", 1.0, 100.0, time.time()))
+    assert not island._meter_timer.isActive() and bar.mini.visualizer.is_silent()
+    island._bridge = None
+    monkeypatch.setattr(IslandController, "SYSTEM_SERVICES", False)
+    island._audio = None
+
+
+# --- мелкие детали: узкая капсула ---
+
+def test_narrow_capsule_keeps_everything_inside(qt_app):
+    from interface.compact_bar import PAD, CompactBar
+    from island.actions import BUILTIN_ACTIONS, QuickAction
+    from monitoring.weather import Day, Weather
+
+    bar = CompactBar(config={"animations": False, "width": 640})
+    bar.place_on_screen()
+    bar.show()
+    qt_app.processEvents()
+    bar.states.hold(False)
+    assert bar.cursor().shape() == Qt.CursorShape.PointingHandCursor and "раскрыть" in bar.toolTip()
+    bar.states.open(IslandState.CONTROL)
+    qt_app.processEvents()
+    assert bar.cursor().shape() != Qt.CursorShape.PointingHandCursor and bar.toolTip() == ""
+    # вкладки: подпись только у выбранной, ничто не выходит за край
+    nav = bar.nav
+    assert nav.is_condensed() and nav.chips[IslandState.CONTROL].text() == "Пульт"
+    assert nav.chips[IslandState.SYSTEM].text() == "" and nav.chips[IslandState.SYSTEM].toolTip() == "Система"
+    assert all(chip.geometry().right() <= nav.pin_btn.geometry().left() for chip in nav.chips.values())
+    bar.states.open(IslandState.SYSTEM)
+    qt_app.processEvents()
+    assert nav.chips[IslandState.SYSTEM].text() == "Система" and nav.chips[IslandState.CONTROL].text() == ""
+    # пульт: колонок столько, сколько помещается; лишние кнопки уходят в следующий ряд
+    control = bar.control
+    width = 640 - 2 * PAD
+    assert control.columns() == 7
+    extra = [QuickAction(f"custom:{i}", f"Своё {i}", target="x") for i in range(3)]
+    control.set_actions(list(BUILTIN_ACTIONS) + extra)
+    bar.states.open(IslandState.CONTROL)
+    qt_app.processEvents()
+    assert len(control.tiles) == 11 and control.HEIGHT == type(control).HEIGHT, "два ряда"
+    assert all(tile.geometry().right() <= width for tile in control.tiles.values())
+    control.set_actions(list(BUILTIN_ACTIONS)[:5])
+    assert control.HEIGHT == type(control).HEIGHT - control.ROW_HEIGHT, "один ряд — вкладка ниже"
+    # погода: на узкой капсуле прогноз не теснит текст
+    days = tuple(Day(f"2026-11-1{i}", -3, 2, 3) for i in range(1, 5))
+    bar.set_weather(Weather("Казань", -4.0, None, 3, None, None, days))
+    bar.states.open(IslandState.WEATHER)
+    qt_app.processEvents()
+    view = bar.weather_view
+    assert sum(not c.isHidden() for c in view.day_columns) == 1 and view.city.width() >= 150
+    bar.close()
+
+    wide = CompactBar(config={"animations": False, "width": 1400})
+    wide.place_on_screen()
+    wide.show()
+    wide.states.open(IslandState.CONTROL)
+    qt_app.processEvents()
+    if wide.geometry().width() > 900:          # экран шире 900 px
+        assert not wide.nav.is_condensed() and wide.control.columns() == wide.control.COLUMNS
+    wide.close()
+
+
+def test_media_volume_row_is_aligned_with_progress(bar, qt_app):
+    from monitoring.winrt_bridge import MediaInfo
+
+    bar.set_media(MediaInfo("x.exe", "X", "Песня", "Автор", "", "playing", 30.0, 200.0, time.time()))
+    bar.set_volume(64.0)
+    bar.states.open(IslandState.MEDIA)
+    qt_app.processEvents()
+    view = bar.media_view
+    assert view.bar.geometry().left() == view.volume_bar.geometry().left()
+    assert view.bar.geometry().right() == view.volume_bar.geometry().right(), "громкость ровно под полосой трека"
+
+
+def test_capsule_morph_resizes_window_only_twice(qt_app):
+    """Плавность: во время анимации растёт нарисованная капсула, а системное окно меняет размер
+    один раз в начале (общая область) и один раз в конце — не на каждом кадре."""
+    from PySide6.QtCore import QEvent, QObject
+
+    from interface.compact_bar import MARGIN, CompactBar
+
+    class Resizes(QObject):
+        count = 0
+
+        def eventFilter(self, obj, event):   # noqa: N802
+            if event.type() == QEvent.Type.Resize:
+                self.count += 1
+            return False
+
+    bar = CompactBar(config={"animation_speed": 200})
+    bar.place_on_screen()
+    bar.show()
+    qt_app.processEvents()
+    bar.states.hold(False)
+    # после создания окно один раз перепроверяет своё место на экране — ждём, чтобы это не прервало анимацию
+    assert _pump(qt_app, lambda: not bar._reanchor_timer.isActive())
+    mini = bar.geometry()
+    watcher = Resizes()
+    bar.installEventFilter(watcher)
+    frames = []
+    bar.animator.frame.connect(lambda rect, radius: frames.append((rect.width(), rect.height(), radius)))
+
+    bar.states.open(IslandState.CONTROL)
+    assert bar.animator.is_morphing() and bar._frame is not None
+    union = bar.geometry()
+    assert union.width() > 600 and union.contains(mini), "окно сразу занимает общую область"
+    assert bar._cap_rect().width() < 300, "а капсула ещё маленькая"
+    assert bar.row.isVisible() and bar._row_fx.opacity() < 0.5, "строка проявляется постепенно"
+    target = bar._win_target
+    assert _pump(qt_app, lambda: not bar.animator.is_morphing() and bar._fx.opacity() > 0.99
+                 and bar._row_fx.opacity() > 0.99)
+    assert bar.geometry() == target and bar._frame is None
+    assert bar._cap_rect().width() == target.width() - 2 * MARGIN
+    assert watcher.count <= 2, f"окно меняло размер {watcher.count} раз"
+    assert len(frames) > 3 and frames[-1][0] == target.width(), "последний кадр — точно конечная форма"
+    assert max(w for w, _h, _r in frames) <= target.width() * 1.04, "выход за размер — лёгкий"
+    assert bar.shell.geometry() == bar.rect().adjusted(MARGIN, MARGIN, -MARGIN, -MARGIN)
+
+    watcher.count = 0
+    bar.states.close()
+    assert bar.animator.is_morphing() and bar.geometry() == target, "при сворачивании окно ждёт конца анимации"
+    assert _pump(qt_app, lambda: not bar.animator.is_morphing() and bar.mini.isVisible()
+                 and bar._mini_fx.opacity() > 0.99)
+    assert bar.geometry() == mini and not bar.row.isVisible() and watcher.count <= 2
+    # переход прерван на полпути: новая анимация стартует с текущего кадра, без скачка
+    bar.states.open(IslandState.MEDIA)
+    assert _pump(qt_app, lambda: bar._frame is not None and bar._frame.width() > mini.width() + 80)
+    midway = bar._frame.width()
+    bar.states.close()
+    assert abs(bar._frame.width() - midway) < 1.0
+    assert _pump(qt_app, lambda: not bar.animator.is_morphing() and bar.mini.isVisible())
+    assert bar.geometry() == mini
+    bar.close()

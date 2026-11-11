@@ -24,13 +24,12 @@ class ControlBar(QFrame):
         layout.setContentsMargins(14, 4, 8, 4)
         layout.setSpacing(4)
 
-        if styles.DOT_MATRIX:
-            title = DotLabel("SIRIUS", dot=2.4, gap=1.2, color=styles.WHITE)
-        else:
-            title = QLabel("SIRIUS")
-            title.setObjectName("title")
-        self.title = title
-        layout.addWidget(title)
+        # логотип в двух видах: точечный и обычный; какой показан, решает тема (apply_theme)
+        self.title_dots = DotLabel("SIRIUS", dot=2.4, gap=1.2, color=styles.WHITE)
+        self.title_text = QLabel("SIRIUS")
+        self.title_text.setObjectName("title")
+        layout.addWidget(self.title_dots)
+        layout.addWidget(self.title_text)
         layout.addSpacing(12)
 
         self.status_label = QLabel("Проверка Ollama…")
@@ -63,6 +62,7 @@ class ControlBar(QFrame):
         self._right = QHBoxLayout()
         self._right.setSpacing(8)
         layout.addLayout(self._right)
+        self.apply_theme()
 
     @staticmethod
     def _bar_button(text: str, tooltip: str) -> QPushButton:
@@ -72,6 +72,17 @@ class ControlBar(QFrame):
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         return btn
+
+    @property
+    def title(self) -> QWidget:
+        return self.title_dots if styles.DOT_MATRIX else self.title_text
+
+    def apply_theme(self) -> None:
+        """То, что в полосе зависит от темы: вид логотипа и место навигации."""
+        self.title_dots.setVisible(styles.DOT_MATRIX)
+        self.title_text.setVisible(not styles.DOT_MATRIX)
+        self.title_dots.set_color(styles.WHITE)
+        self.set_nav_visible(not styles.NAV_SIDE)
 
     def set_nav_visible(self, visible: bool) -> None:
         """Скрывает кнопки панелей, «Скрыть» и «Сброс»: в темах с боковой навигацией они живут в SideRail."""

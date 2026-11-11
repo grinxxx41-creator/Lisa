@@ -155,18 +155,29 @@ class MainWindow(WindowV03Mixin, QMainWindow):
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(8)
-        self.side_rail: SideRail | None = None
-        if styles.NAV_SIDE:      # значки панелей — в боковой панели, верхняя полоса остаётся для статуса и действий
-            self.side_rail = SideRail([(s.panel_id, s.title, s.tooltip) for s in self.panel_registry.specs()])
-            self.control_bar.set_nav_visible(False)
-            self.settings_btn.hide()
-            body.addWidget(self.side_rail)
+        # боковая панель создаётся всегда, а показывается в темах с NAV_SIDE: так тему можно менять на лету
+        self.side_rail = SideRail([(s.panel_id, s.title, s.tooltip) for s in self.panel_registry.specs()])
+        body.addWidget(self.side_rail)
         body.addWidget(self.canvas, 1)
         root.addLayout(body, 1)
         self.workspace = WorkspaceManager(self.canvas, self.panel_registry, self)
 
         self.setCentralWidget(central)
         self.statusBar().showMessage("Готово")
+        self._apply_theme_layout()
+        styles.notifier().changed.connect(self._on_theme_changed)
+
+    def _apply_theme_layout(self) -> None:
+        """Всё в окне, что зависит от флагов темы: где навигация, какой логотип, виден ли аватар."""
+        side = styles.NAV_SIDE
+        self.side_rail.setVisible(side)
+        self.control_bar.apply_theme()
+        self.settings_btn.setVisible(not side)
+        self.avatar.setVisible(styles.SHOW_AVATAR)
+
+    def _on_theme_changed(self, _name: str) -> None:
+        self._apply_theme_layout()
+        self.canvas.update()
 
     def _build_registry(self) -> PanelRegistry:
         registry = PanelRegistry()
@@ -727,6 +738,9 @@ class MainWindow(WindowV03Mixin, QMainWindow):
     def _apply_settings(self, values: dict) -> None:
         theme_changed = styles.normalize_theme(values.get("theme")) != styles.THEME
         self.settings = values
+        if theme_changed and styles.LIVE_SWITCH:      # заготовка: пока выключено, тема меняется перезапуском
+            styles.set_theme(values.get("theme"))
+            theme_changed = False
         if (values["model_name"] != self.models.model_name
                 or values["ollama_url"].rstrip("/") != self.models.base_url):
             # прежняя модель больше не нужна: освобождаем видеопамять сразу, а не через KEEP_ALIVE

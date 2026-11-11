@@ -9,15 +9,14 @@ from typing import Any
 from PySide6.QtCore import Qt
 
 from interface.styles import CYAN
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLineEdit,
                                QLabel, QListWidget, QListWidgetItem, QPushButton, QScrollArea, QSlider, QSpinBox,
                                QVBoxLayout, QWidget)
 
 from island.actions import validate_target
 from island.settings import MAX_CUSTOM_ACTIONS, RANGES, normalize
 
-POSITION_TITLES = (("top", "Сверху по центру"), ("top-left", "Сверху слева"), ("top-right", "Сверху справа"),
-                   ("bottom", "Снизу по центру"), ("custom", "Своё место (задано перетаскиванием)"))
+POSITION_TITLES = (("top", "Сверху по центру"), ("top-left", "Сверху слева"), ("top-right", "Сверху справа"))
 THEME_TITLES = (("graphite", "Графит"), ("black", "Чёрная"), ("sirius", "SIRIUS — тёмно-синяя с голубой каймой"))
 VISUALIZER_TITLES = (("bars", "Столбики уровня"), ("wave", "Волна"), ("pulse", "Пульс от центра"))
 
@@ -48,8 +47,10 @@ class IslandSettingsTab(QWidget):
         self._check("enabled", "Живой островок: события, музыка, уведомления и расширенные режимы",
                     "Выключено — остаётся прежняя компактная полоска без событий")
         self._check("show_always", "Показывать островок всегда, а не только в компактном режиме")
-        self._combo("position", "Положение:", POSITION_TITLES, skip=() if self._cfg["custom_pos"] else ("custom",))
-        self._spin("width", "Ширина капсулы, px:")
+        self._check("mini", "Мини-капсула: в свёрнутом виде только время, градусы или эквалайзер",
+                    "Щелчок по капсуле раскрывает островок. Выключите, чтобы вернуть длинную строку с полем ввода.")
+        self._combo("position", "Положение (у верхнего края):", POSITION_TITLES)
+        self._spin("width", "Ширина раскрытой капсулы, px:")
         self._spin("height", "Высота капсулы, px:")
         self._slider("opacity", "Непрозрачность фона:", "%")
         self._combo("theme", "Тема:", THEME_TITLES)
@@ -66,6 +67,14 @@ class IslandSettingsTab(QWidget):
         self._check("media_popup", "Показывать новую композицию при смене трека")
         self._check("visualizer", "Визуализатор уровня звука")
         self._combo("visualizer_style", "Вид визуализатора:", VISUALIZER_TITLES)
+
+        self._section("Погода")
+        self._check("weather", "Вкладка погоды и градусы в мини-капсуле",
+                    "Данные берутся из сервиса Open-Meteo. В интернет отправляется только название города.")
+        self.city_edit = QLineEdit(str(self._cfg["weather_city"]))
+        self.city_edit.setMaxLength(80)
+        self.city_edit.setPlaceholderText("например: Казань; пусто — погода не запрашивается")
+        self.form.addRow("Город:", self.city_edit)
 
         self._section("Системные индикаторы")
         self._check("indicators", "Показывать изменение громкости и яркости")
@@ -102,7 +111,7 @@ class IslandSettingsTab(QWidget):
         self._check("pomodoro_restore", "Восстанавливать таймер после перезапуска SIRIUS")
 
         self._section("Быстрые действия")
-        self._check("actions", "Быстрые действия в островке")
+        self._check("actions", "Пульт: быстрые действия круглыми значками (главная вкладка)")
         self.actions_list = QListWidget()
         self.actions_list.setFixedHeight(96)
         for item in self._cfg["custom_actions"]:
@@ -235,8 +244,8 @@ class IslandSettingsTab(QWidget):
         result.update({key: spin.value() for key, spin in self.spins.items()})
         result.update({key: slider.value() for key, slider in self.sliders.items()})
         result.update({key: combo.currentData() for key, combo in self.combos.items()})
-        if result["position"] != "custom":
-            result["custom_pos"] = None
+        result["custom_pos"] = None
+        result["weather_city"] = self.city_edit.text().strip()
         actions = []
         for index in range(self.actions_list.count()):
             title, target = self.actions_list.item(index).data(Qt.ItemDataRole.UserRole)

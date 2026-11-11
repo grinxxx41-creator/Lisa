@@ -33,7 +33,11 @@ BUILTIN_ACTIONS = (
     QuickAction("heavy", "Ресурсы", "Освободить или вернуть модель и голос", icon="chip"),
     QuickAction("settings", "Настройки", "Открыть настройки SIRIUS", icon="settings"),
     QuickAction("explorer", "Проводник", "Открыть проводник Windows", icon="folder"),
+    QuickAction("wifi", "Wi-Fi", "Открыть параметры Wi-Fi в Windows", icon="wifi"),
+    QuickAction("bluetooth", "Bluetooth", "Открыть параметры Bluetooth в Windows", icon="bluetooth"),
 )
+# действия, которые открывают страницу «Параметров» Windows
+SETTINGS_PAGES = {"wifi": "ms-settings:network-wifi", "bluetooth": "ms-settings:bluetooth"}
 
 
 def custom_actions(raw: Any) -> list[QuickAction]:
@@ -79,6 +83,18 @@ def launch_target(target: str) -> tuple[bool, str]:
         log.warning("Не удалось открыть %s: %s", target, exc)
         return False, f"Не удалось открыть: {exc.strerror or exc}"
     return True, f"Открыто: {Path(target).name or target}"
+
+
+def open_settings_page(action_id: str) -> tuple[bool, str]:
+    """Открывает страницу «Параметров» Windows из SETTINGS_PAGES."""
+    uri = SETTINGS_PAGES.get(action_id)
+    if uri is None or not hasattr(os, "startfile"):
+        return False, "Параметры Windows недоступны"
+    try:
+        os.startfile(uri)   # noqa: S606 — адрес из постоянного списка выше
+    except OSError as exc:
+        return False, f"Не удалось открыть параметры Windows: {exc}"
+    return True, "Открыты параметры Windows"
 
 
 def open_explorer() -> tuple[bool, str]:

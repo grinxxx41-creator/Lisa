@@ -74,7 +74,8 @@ class NavBar(QWidget):
     pin_toggled = Signal(bool)
     close_requested = Signal()
 
-    ITEMS = ((IslandState.EXPANDED, "LISA", "chat"), (IslandState.MEDIA, "Медиа", "music"),
+    ITEMS = ((IslandState.CONTROL, "Пульт", "bolt"), (IslandState.EXPANDED, "LISA", "chat"),
+             (IslandState.MEDIA, "Медиа", "music"), (IslandState.WEATHER, "Погода", "brightness"),
              (IslandState.SYSTEM, "Система", "system"), (IslandState.NOTIFICATION, "Уведомления", "bell"),
              (IslandState.INTERACTIVE, "Инструменты", "tools"))
 
@@ -85,8 +86,11 @@ class NavBar(QWidget):
         lay.setContentsMargins(0, 0, 0, 4)
         lay.setSpacing(6)
         self.chips: dict[IslandState, Chip] = {}
+        self._titles: dict[IslandState, str] = {}
         for state, title, glyph in self.ITEMS:
             chip = Chip(title, glyph, checkable=True)
+            chip.setToolTip(title)
+            self._titles[state] = title
             chip.clicked.connect(lambda _checked=False, s=state: self.selected.emit(s))
             self.chips[state] = chip
             lay.addWidget(chip)
@@ -103,6 +107,29 @@ class NavBar(QWidget):
     def set_current(self, state: IslandState) -> None:
         for key, chip in self.chips.items():
             chip.setChecked(key is state)
+        self._fit()
+
+    def is_condensed(self) -> bool:
+        """Места мало: подпись показана только у выбранной вкладки, у остальных — значки."""
+        return any(not chip.text() for chip in self.chips.values() if not chip.isHidden())
+
+    def _fit(self) -> None:
+        lay = self.layout()
+        shown = [(key, chip) for key, chip in self.chips.items() if not chip.isHidden()]
+        for key, chip in shown:
+            chip.setText(self._titles[key])
+        need = (sum(chip.sizeHint().width() for _key, chip in shown) + lay.spacing() * (len(shown) + 1)
+                + self.pin_btn.width())
+        if need > self.width() > 0:
+            for _key, chip in shown:
+                if not chip.isChecked():
+                    chip.setText("")
+        for _key, chip in shown:
+            chip.updateGeometry()
+
+    def resizeEvent(self, event) -> None:   # noqa: N802
+        super().resizeEvent(event)
+        self._fit()
 
     def set_pinned(self, pinned: bool) -> None:
         self.pin_btn.blockSignals(True)
@@ -113,11 +140,12 @@ class NavBar(QWidget):
     def set_available(self, states: set[IslandState]) -> None:
         for key, chip in self.chips.items():
             chip.setVisible(key in states)
+        self._fit()
 
     def set_unread(self, count: int) -> None:
-        chip = self.chips[IslandState.NOTIFICATION]
-        chip.setText(f"Уведомления · {count}" if count else "Уведомления")
-        chip.updateGeometry()
+        self._titles[IslandState.NOTIFICATION] = f"Уведомления · {count}" if count else "Уведомления"
+        self.chips[IslandState.NOTIFICATION].setToolTip(self._titles[IslandState.NOTIFICATION])
+        self._fit()
 
 
 # --- LISA ------------------------------------------------------------------------------
@@ -207,13 +235,15 @@ class HubView(QWidget):
 # --- медиа -----------------------------------------------------------------------------
 
 class MediaView(QWidget):
-    HEIGHT = 96
+    HEIGHT = 116
     command = Signal(str, object)      # toggle | next | prev | seek (секунды)
+    volume_changed = Signal(float)     # пользователь подвинул громкость, 0..100
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._info = None
         self._seek_hold_until = 0.0
+        self._volume_hold_until = 0.0
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 2, 0, 2)
         lay.setSpacing(14)
@@ -240,6 +270,28 @@ class MediaView(QWidget):
         self._progress_row.setLayout(progress)
         progress.setContentsMargins(0, 4, 0, 0)
         middle.addWidget(self._progress_row)
+        # общая громкость Windows: шкалу можно двигать
+        volume = QHBoxLayout()
+        volume.setSpacing(8)
+        volume.setContentsMargins(0, 6, 0, 0)
+        self.volume_icon = glyph_label("volume2", 13)
+        for widget in (self.position, self.duration, self.volume_icon):
+            widget.setFixedWidth(34)
+        self.duration.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.volume_bar = SmoothBar()
+        self.volume_bar.set_interactive(True)
+        self.volume_bar.setToolTip("Громкость Windows")
+        self.volume_bar.sought.connect(self._on_volume)
+        self.volume_value = label("", "isMono")
+        self.volume_value.setFixedWidth(34)
+        self.volume_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        volume.addWidget(self.volume_icon)
+        volume.addWidget(self.volume_bar, 1)
+        volume.addWidget(self.volume_value)
+        self._volume_row = QWidget()
+        self._volume_row.setLayout(volume)
+        self._volume_row.hide()
+        middle.addWidget(self._volume_row)
         middle.addStretch(1)
         lay.addLayout(middle, 1)
 
@@ -307,6 +359,28 @@ class MediaView(QWidget):
         pos = info.live_position()
         self.position.setText(format_clock(pos))
         self.bar.set_value(pos / info.duration)
+
+    def set_volume(self, percent: float | None, muted: bool = False) -> None:
+        """Общая громкость Windows, 0..100; None — устройства вывода нет, шкала скрыта."""
+        if percent is None:
+            self._volume_row.hide()
+            return
+        self._volume_row.show()
+        if time.monotonic() < self._volume_hold_until:
+            return                      # пользователь двигает шкалу: не дёргаем её старым значением
+        glyph = "mute" if muted or percent < 0.5 else ("volume1" if percent < 34 else "volume2" if percent < 67
+                                                         else "volume3")
+        self.volume_icon.setText(GLYPHS[glyph])
+        self.volume_bar.set_value(percent / 100.0)
+        self.volume_value.setText(f"{percent:.0f}%")
+
+    def volume_shown(self) -> bool:
+        return not self._volume_row.isHidden()
+
+    def _on_volume(self, fraction: float) -> None:
+        self._volume_hold_until = time.monotonic() + 0.7
+        self.volume_value.setText(f"{fraction * 100:.0f}%")
+        self.volume_changed.emit(fraction * 100.0)
 
     def _on_seek(self, fraction: float) -> None:
         if self._info is not None and self._info.duration > 0:

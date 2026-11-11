@@ -16,17 +16,19 @@ from __future__ import annotations
 import math
 import os
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QGuiApplication, QKeySequence, QLinearGradient, QPainter, QPainterPath,
                            QPen, QPixmap, QRadialGradient, QRegion, QShortcut)
 from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from interface.avatar_widget import AvatarState
-from interface.island.animator import IslandAnimator
+from interface.island.animator import OVERSHOOT_SHARE, IslandAnimator
 from interface.island.state_manager import IslandStateManager
+from interface.island.control_view import ControlView
 from interface.island.tools_views import ToolsView
 from interface.island.views import HubView, IndicatorView, MediaView, NavBar, NoteList, NoteToast, SystemView
+from interface.island.weather_view import MiniView, WeatherView
 from interface.island.widgets import ElidedLabel, GLYPHS, IconButton, Visualizer, glyph_font
 from interface import styles
 from interface.styles import rgb as _rgb
@@ -58,6 +60,9 @@ THEMES = {
 if styles.DOT_MATRIX:      # монохромная тема: капсула без синеватого оттенка
     THEMES = {"graphite": ("#141414", "#0A0A0A", WHITE, 40), "black": ("#050505", "#000000", WHITE, 34),
               "sirius": ("#1B1B1B", "#0E0E0E", WHITE, 70)}
+if styles.ISLAND_IOS:      # как Dynamic Island: сплошной чёрный, кайма едва заметна, углы круглее
+    THEMES = {name: ("#000000", "#000000", WHITE, 16) for name in THEMES}
+    EXPANDED_RADIUS = 34.0
 _dot_brush: QBrush | None = None
 
 
@@ -193,12 +198,13 @@ class CompactBar(QWidget):
         self._row_h = self._cfg["height"]
         self._radius = self._row_h / 2
         self._body_h = 0
-        self._bottom = False                       # капсула у нижнего края: раскрывается вверх
+        self._bottom = False                       # островок закреплён у верхнего края
+        self._full_w = 0                           # ширина раскрытой капсулы на текущем экране
+        self._frame: QRectF | None = None          # положение капсулы во время анимации (координаты экрана)
+        self._win_target: QRect | None = None      # размер окна, который оно примет по окончании анимации
         self._anchor: tuple[int, int] | None = None   # x центра и y края, от которого растёт капсула
         self._screen = None
-        self._drag_from: QPointF | None = None
-        self._drag_start: QPoint | None = None
-        self._dragged = False
+        self._pressed = False
         self._reply = ""
         self._asked_here = False
         self._busy = False
@@ -209,14 +215,23 @@ class CompactBar(QWidget):
         self._metrics_mode = "full"
         self._unread = 0
         self._row_width = -1
+        self._playing = False
+        self._available: set = set()
 
         self.states = IslandStateManager(self)
         self.animator = IslandAnimator(self)
         self.animator.frame.connect(self._on_frame)
         self.animator.morph_finished.connect(self._on_morph_finished)
 
+        # оболочка повторяет форму капсулы и обрезает содержимое, пока капсула растёт внутри окна
+        self.shell = QWidget(self)
         self._build_row()
         self._build_body()
+        self.mini = MiniView(self.shell)
+        self.mini.hide()
+        self._row_fx = self._opacity(self.row)
+        self._mini_fx = self._opacity(self.mini)
+        self.mini.resized.connect(self._on_mini_resized)
         self.states.changed.connect(self._on_state_changed)
         self.states.pinned_changed.connect(self.nav.set_pinned)
 
@@ -240,7 +255,7 @@ class CompactBar(QWidget):
     # --- построение ------------------------------------------------------------------
 
     def _build_row(self) -> None:
-        self.row = QWidget(self)
+        self.row = QWidget(self.shell)
         lay = QHBoxLayout(self.row)
         lay.setContentsMargins(4, 0, 10, 0)
         lay.setSpacing(8)
@@ -322,7 +337,7 @@ class CompactBar(QWidget):
         lay.addWidget(self.expand_btn)
 
     def _build_body(self) -> None:
-        self.body = QWidget(self)
+        self.body = QWidget(self.shell)
         lay = QVBoxLayout(self.body)
         lay.setContentsMargins(PAD, 2, PAD, BODY_BOTTOM)
         lay.setSpacing(0)
@@ -331,6 +346,8 @@ class CompactBar(QWidget):
         self.nav.pin_toggled.connect(self.states.set_pinned)
         lay.addWidget(self.nav)
         self.pages = QStackedWidget()
+        self.control = ControlView()
+        self.weather_view = WeatherView()
         self.hub = HubView()
         self.media_view = MediaView()
         self.system_view = SystemView()
@@ -338,7 +355,7 @@ class CompactBar(QWidget):
         self.notes_list = NoteList()
         self.indicator = IndicatorView()
         self.tools = ToolsView()
-        for page in (self.hub, self.media_view, self.system_view, self.toast, self.notes_list, self.indicator,
+        for page in (self.control, self.weather_view, self.hub, self.media_view, self.system_view, self.toast, self.notes_list, self.indicator,
                      self.tools):
             self.pages.addWidget(page)
         lay.addWidget(self.pages, 1)
@@ -348,6 +365,14 @@ class CompactBar(QWidget):
         self.body.setGraphicsEffect(self._fx)
         self.body.hide()
         self.body.installEventFilter(self)
+
+    @staticmethod
+    def _opacity(widget: QWidget) -> QGraphicsOpacityEffect:
+        effect = QGraphicsOpacityEffect(widget)
+        effect.setOpacity(1.0)
+        effect.setEnabled(False)          # включается только на время проявления
+        widget.setGraphicsEffect(effect)
+        return effect
 
     def eventFilter(self, obj, event) -> bool:
         # любое действие в раскрытой капсуле откладывает автоматическое сворачивание
@@ -369,7 +394,7 @@ class CompactBar(QWidget):
         self.animator.enabled = cfg["animations"]
         self.animator.speed = cfg["animation_speed"] / 100.0
         duration = 0 if not cfg["animations"] else int(180 / max(0.25, self.animator.speed))
-        for bar in (self.media_view.bar, self.indicator.bar, self.tools.pomodoro.bar):
+        for bar in (self.media_view.bar, self.media_view.volume_bar, self.indicator.bar, self.tools.pomodoro.bar):
             bar.duration_ms = duration
         self.states.auto_collapse_ms = cfg["auto_collapse_s"] * 1000
         self.states.enabled = cfg["enabled"]
@@ -384,9 +409,8 @@ class CompactBar(QWidget):
             self.media_chip.hide()
         if not (cfg["enabled"] and cfg["pomodoro"]):
             self.pomo_chip.hide()
-        tools_on = any(cfg[k] for k in ("shelf", "clipboard", "pomodoro", "actions"))
-        self.tools.set_features(shelf=cfg["shelf"], clipboard=cfg["clipboard"], pomodoro=cfg["pomodoro"],
-                                actions=cfg["actions"])
+        tools_on = any(cfg[k] for k in ("shelf", "clipboard", "pomodoro"))
+        self.tools.set_features(shelf=cfg["shelf"], clipboard=cfg["clipboard"], pomodoro=cfg["pomodoro"])
         available = {IslandState.EXPANDED, IslandState.SYSTEM}
         if cfg["media"]:
             available.add(IslandState.MEDIA)
@@ -394,6 +418,11 @@ class CompactBar(QWidget):
             available.add(IslandState.NOTIFICATION)
         if tools_on:
             available.add(IslandState.INTERACTIVE)
+        if cfg["actions"]:
+            available.add(IslandState.CONTROL)
+        if cfg["weather"]:
+            available.add(IslandState.WEATHER)
+        self._sync_mini_media()
         self._available = available
         self.nav.set_available(available)
         if self.states.base not in available and self.states.base is not IslandState.COMPACT:
@@ -457,6 +486,7 @@ class CompactBar(QWidget):
         self.lisa.mood = mood
 
     def set_voice(self, enabled: bool) -> None:
+        self.control.set_active("voice", enabled)
         self.voice_btn.blockSignals(True)
         self.voice_btn.setChecked(enabled)
         self.voice_btn.setText("VOICE ON" if enabled else "VOICE OFF")
@@ -566,6 +596,8 @@ class CompactBar(QWidget):
             if not info.playing:
                 self.mini_visualizer.clear()
         self.media_chip.setVisible(show)
+        self._playing = bool(show and info.playing)
+        self._sync_mini_media()
         self._fit_row()
 
     def push_audio_level(self, level: float) -> None:
@@ -574,6 +606,23 @@ class CompactBar(QWidget):
             self.media_view.visualizer.push(level)
         if self.media_chip.isVisible():
             self.mini_visualizer.push(level)
+        self.mini.push_level(level)
+
+    def _sync_mini_media(self) -> None:
+        self.mini.set_playing(self._playing, self._cfg["visualizer"])
+
+    def set_weather(self, weather, hint: str = "", city: str = "") -> None:
+        """Погода (monitoring.weather.Weather) или None с причиной, почему её нет."""
+        self.weather_view.set_weather(weather, hint, city)
+        self.mini.set_weather(weather if self._cfg["weather"] else None)
+
+    def set_volume(self, percent: float | None, muted: bool = False) -> None:
+        """Общая громкость Windows для шкалы во вкладке «Медиа»."""
+        self.media_view.set_volume(percent, muted)
+
+    def set_action_active(self, action_id: str, active: bool) -> None:
+        """Подсветка кнопки пульта (например, «Ресурсы», пока модель выгружена)."""
+        self.control.set_active(action_id, active)
 
     def set_pomodoro(self, text: str | None) -> None:
         """Оставшееся время в строке капсулы; None — таймер не запущен."""
@@ -589,9 +638,13 @@ class CompactBar(QWidget):
         self._unread = count
         self.bell_btn.set_badge(count)
         self.nav.set_unread(count)
+        self.mini.set_unread(count if self._cfg["enabled"] else 0)
         self._fit_row()
 
     def open_tool(self, tab: str) -> None:
+        if tab == "actions":           # действия переехали в пульт
+            self.states.open(IslandState.CONTROL)
+            return
         if self.states.open(IslandState.INTERACTIVE):
             self.tools.show_tab(tab)
 
@@ -605,6 +658,10 @@ class CompactBar(QWidget):
     def _page_for(self, state: IslandState, transient: bool) -> QWidget | None:
         if state is IslandState.COMPACT:
             return None
+        if state is IslandState.CONTROL:
+            return self.control
+        if state is IslandState.WEATHER:
+            return self.weather_view
         if state is IslandState.EXPANDED:
             return self.hub
         if state is IslandState.MEDIA:
@@ -634,8 +691,36 @@ class CompactBar(QWidget):
         page, nav = key
         return 2 + (NavBar.HEIGHT if nav else 0) + page.HEIGHT + BODY_BOTTOM
 
+    def _mini_on(self) -> bool:
+        return bool(self._cfg["mini"] and self._cfg["enabled"])
+
+    def _capsule_size(self, key: tuple | None) -> tuple[int, int]:
+        """Ширина и высота капсулы (без полей окна); key=None — свёрнутая."""
+        if key is None:
+            if self._mini_on():
+                return self.mini.wanted_width(), MiniView.HEIGHT
+            return self._cfg["width"], self._row_h
+        return self._cfg["width"], self._row_h + self._body_height(key)
+
     def _capsule_height(self, key: tuple | None) -> int:
-        return self._row_h if key is None else self._row_h + self._body_height(key)
+        return self._capsule_size(key)[1]
+
+    def _mark_clickable(self, clickable: bool) -> None:
+        if clickable:
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.setToolTip("Щёлкните, чтобы раскрыть островок")
+        else:
+            self.unsetCursor()
+            self.setToolTip("")
+
+    def _open_main(self) -> None:
+        """Щелчок по мини-капсуле: главная вкладка — пульт (или LISA, если действия выключены)."""
+        main = IslandState.CONTROL if IslandState.CONTROL in self._available else IslandState.EXPANDED
+        self.states.open(main)
+
+    def _on_mini_resized(self) -> None:
+        if self.mini.isVisible() and self._target_key is None:
+            self._morph_to(None)
 
     def _transition(self) -> None:
         if self._swapping:
@@ -645,7 +730,7 @@ class CompactBar(QWidget):
             if self._shown_key is None and not self.body.isVisible():
                 self._morph_to(None)
                 return
-            self.animator.fade(self._fx, 0.0, 120)
+            self.animator.fade(self._fx, 0.0, 160)
             self._morph_to(None)
         elif self._shown_key is None:
             self._show_page(key)
@@ -669,29 +754,80 @@ class CompactBar(QWidget):
         self._body_h = self._body_height(key)
         self.body.show()
         self._layout_children()
-        self.animator.fade(self._fx, 1.0, 220)
+        self.animator.fade(self._fx, 1.0, 320, curve=QEasingCurve.Type.InOutQuad)
         self._morph_to(key)
 
     def _morph_to(self, key: tuple | None) -> None:
-        target = self._rect_for(self._capsule_height(key))
-        radius = self._row_h / 2 if key is None else EXPANDED_RADIUS
-        if not self.isVisible():
-            self._on_frame(target, radius)
-            self._on_morph_finished()
-            return
-        self.animator.morph(self.geometry(), target, self._radius, radius)
+        """Капсула плавно принимает форму для содержимого key.
 
-    def _on_frame(self, rect: QRect, radius: float) -> None:
+        Окно сразу занимает общую область старой и новой формы (одно изменение размера), дальше растёт
+        только нарисованная капсула; по окончании окно принимает итоговый размер (_settle).
+        """
+        target = self._rect_for(key)
+        radius = self._capsule_size(key)[1] / 2 if key is None else EXPANDED_RADIUS
+        if key is not None or not self._mini_on():
+            if self.mini.isVisible() or self.row.isHidden():
+                self._row_fx.setOpacity(0.0)        # из мини-капсулы: строка проявляется, а не выскакивает
+            self.mini.hide()
+            self.row.show()
+            self._mark_clickable(False)
+            self.animator.fade(self._row_fx, 1.0, 280, curve=QEasingCurve.Type.InOutQuad)
+        elif self.row.isVisible():
+            self.animator.fade(self._row_fx, 0.0, 170)      # сворачивание в мини-капсулу: строка гаснет
+        self._win_target = QRect(target)
+        if not self.isVisible() or not self.animator.enabled:
+            self._settle(radius)
+            return
+        start = QRectF(self._frame) if self._frame is not None else QRectF(self.geometry())
+        union = self.geometry().united(target)
+        if target.width() * target.height() >= start.width() * start.height():
+            # раскрытие: запас под лёгкий выход капсулы за конечный размер
+            pad_x = math.ceil(abs(target.width() - start.width()) * OVERSHOOT_SHARE / 2) + 2
+            pad_y = math.ceil(abs(target.height() - start.height()) * OVERSHOOT_SHARE) + 2
+            union = union.adjusted(-pad_x, 0, pad_x, pad_y)
+        self._frame = start
+        if union != self.geometry():
+            self.setGeometry(union)
+        self.animator.morph(start, QRectF(target), self._radius, radius)
+
+    def _cap_rect(self) -> QRectF:
+        """Капсула в координатах окна: во время анимации — текущий кадр, в покое — всё окно без полей."""
+        if self._frame is None:
+            return QRectF(self.rect()).adjusted(MARGIN, MARGIN, -MARGIN, -MARGIN)
+        origin = self.geometry().topLeft()
+        return self._frame.translated(-origin.x(), -origin.y()).adjusted(MARGIN, MARGIN, -MARGIN, -MARGIN)
+
+    def _on_frame(self, rect, radius: float) -> None:
         self._radius = radius
-        if rect != self.geometry():
-            self.setGeometry(rect)
+        self._frame = QRectF(rect)
+        self._layout_children()
         self.update()
 
-    def _on_morph_finished(self) -> None:
+    def _settle(self, radius: float | None = None) -> None:
+        """Конец перехода: окно принимает итоговый размер, капсула снова занимает его целиком."""
+        self._frame = None
+        if radius is not None:
+            self._radius = radius
+        target = self._win_target
+        if target is not None and target != self.geometry():
+            self.setGeometry(target)
+        self._layout_children()
+        self.update()
         if self._target_key is None and not self._swapping:
             self.body.hide()
             self._shown_key = None
             self._body_h = 0
+            mini = self._mini_on()
+            appear = mini and self.mini.isHidden()
+            self.row.setVisible(not mini)
+            self.mini.setVisible(mini)
+            self._mark_clickable(mini)
+            if appear:
+                self._mini_fx.setOpacity(0.0)
+                self.animator.fade(self._mini_fx, 1.0, 200)
+
+    def _on_morph_finished(self) -> None:
+        self._settle()
 
     def _on_menu(self) -> None:
         if self.states.base is IslandState.COMPACT:
@@ -746,57 +882,55 @@ class CompactBar(QWidget):
         area = screen.availableGeometry()
         width = self._window_width(area)
         position = self._cfg["position"]
-        custom = self._cfg["custom_pos"]
-        self._bottom = position == "bottom"
-        if position == "custom" and custom:
-            cx, top = custom
-            cx = max(area.left() + width // 2, min(area.right() - width // 2, cx))
-            top = max(area.top(), min(area.bottom() - self._row_h - 2 * MARGIN, top))
-            self._bottom = top + self._row_h // 2 > area.center().y()
-            edge = top + self._row_h + 2 * MARGIN if self._bottom else top
-        else:
-            cx = area.center().x()
-            if position == "top-left":
-                cx = area.left() + EDGE_GAP + width // 2
-            elif position == "top-right":
-                cx = area.right() - EDGE_GAP - width // 2
-            edge = area.bottom() + 1 - EDGE_GAP + MARGIN if self._bottom else area.top() + EDGE_GAP - MARGIN
-        self._anchor = (cx, edge)
+        self._full_w = width - 2 * MARGIN
+        self._bottom = False                    # островок закреплён у верхнего края экрана
+        cx = area.center().x()
+        if position == "top-left":
+            cx = area.left() + EDGE_GAP + width // 2
+        elif position == "top-right":
+            cx = area.right() - EDGE_GAP - width // 2
+        self._anchor = (cx, area.top() + EDGE_GAP - MARGIN)
         self.animator.stop()
         self._swapping = False
         key = self._shown_key if self._target_key is not None else None
         if key is not None:
             self._body_h = self._body_height(key)
             self.animator.fade(self._fx, 1.0, 0)
-        self._on_frame(self._rect_for(self._capsule_height(key)), self._row_h / 2 if key is None else EXPANDED_RADIUS)
-        self._on_morph_finished()
-        self._layout_children()
+            self.mini.hide()
+            self.row.show()
+        self.animator.fade(self._row_fx, 1.0, 0)
+        self.animator.fade(self._mini_fx, 1.0, 0)
+        self._win_target = self._rect_for(key)
+        self._settle(self._capsule_size(key)[1] / 2 if key is None else EXPANDED_RADIUS)
 
     def _window_width(self, area: QRect) -> int:
         return min(self._cfg["width"] + 2 * MARGIN, area.width() - 8)
 
-    def _rect_for(self, capsule_height: int) -> QRect:
+    def _rect_for(self, key: tuple | None) -> QRect:
+        """Прямоугольник окна для содержимого key: по центру точки привязки, растёт вниз от верхнего края."""
         screen = self._screen or self._pick_screen()
         area = screen.availableGeometry() if screen is not None else QRect(0, 0, 1920, 1080)
-        width = self._window_width(area)
-        height = min(capsule_height + 2 * MARGIN, area.height())
+        cap_w, cap_h = self._capsule_size(key)
+        width = min(cap_w + 2 * MARGIN, area.width() - 8)
+        height = min(cap_h + 2 * MARGIN, area.height())
         cx, edge = self._anchor or (area.center().x(), area.top())
         x = max(area.left(), min(area.right() + 1 - width, cx - width // 2))
-        y = edge - height if self._bottom else edge
-        y = max(area.top() - MARGIN, min(area.bottom() + 1 + MARGIN - height, y))
+        y = max(area.top() - MARGIN, min(area.bottom() + 1 + MARGIN - height, edge))
         return QRect(x, y, width, height)
 
     def _layout_children(self) -> None:
-        cap = self.rect().adjusted(MARGIN, MARGIN, -MARGIN, -MARGIN)
-        if self._bottom:                # у нижнего края строка остаётся внизу, содержимое раскрывается вверх
-            row_y = cap.bottom() + 1 - self._row_h
-            self.row.setGeometry(cap.x(), row_y, cap.width(), self._row_h)
-            self.body.setGeometry(cap.x(), row_y - self._body_h, cap.width(), self._body_h)
-        else:
-            self.row.setGeometry(cap.x(), cap.y(), cap.width(), self._row_h)
-            self.body.setGeometry(cap.x(), cap.y() + self._row_h, cap.width(), self._body_h)
-        if cap.width() != self._row_width:
-            self._row_width = cap.width()
+        cap = self._cap_rect().toAlignedRect()
+        self.shell.setGeometry(cap)
+        # строка и раскрытая часть всегда полной ширины и стоят по центру оболочки: пока капсула узкая,
+        # оболочка их обрезает, поэтому содержимое не пересчитывается на каждом кадре анимации
+        full = self._full_w or cap.width()
+        x = (cap.width() - full) // 2
+        self.row.setGeometry(x, 0, full, self._row_h)
+        self.body.setGeometry(x, self._row_h, full, self._body_h)
+        self.mini.setGeometry(0, 0, cap.width(), cap.height())
+        if full != self._row_width:
+            self._row_width = full
+            self.control.set_available_width(full - 2 * PAD)
             self._fit_row()
 
     def resizeEvent(self, event) -> None:
@@ -831,7 +965,7 @@ class CompactBar(QWidget):
     def paintEvent(self, event) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        cap = QRectF(self.rect()).adjusted(MARGIN, MARGIN, -MARGIN, -MARGIN)
+        cap = self._cap_rect()
         radius = min(self._radius, cap.height() / 2)
         top, bottom, border, border_alpha = THEMES.get(self._cfg["theme"], THEMES["graphite"])
         alpha = int(255 * self._cfg["opacity"] / 100)
@@ -839,7 +973,7 @@ class CompactBar(QWidget):
         active = self.lisa.state in _ACTIVE_STATES
         pulse = 0.5 + 0.5 * math.sin(self.lisa.phase() * 4) if active else 0.0
         # мягкое свечение цвета состояния LISA вокруг капсулы
-        glow = 30 + int(70 * pulse) if active else 20
+        glow = 30 + int(70 * pulse) if active else (0 if styles.ISLAND_IOS else 20)
         p.setBrush(Qt.BrushStyle.NoBrush)
         for step, strength in ((1, 1.0), (2, 0.5), (3, 0.22)):
             p.setPen(QPen(_c(accent, int(glow * strength)), 1.4))
@@ -870,41 +1004,15 @@ class CompactBar(QWidget):
             p.drawLine(QPointF(cap.left() + PAD, y), QPointF(cap.right() - PAD, y))
         p.end()
 
-    # --- перетаскивание островка за свободное место ----------------------------------
+    # --- щелчок по мини-капсуле (островок закреплён: перетаскивания нет) -------------
 
     def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_from = event.globalPosition() - QPointF(self.pos())
-            self._drag_start = event.globalPosition().toPoint()
-            self._dragged = False
-
-    def mouseMoveEvent(self, event) -> None:
-        if self._drag_from is None:
-            return
-        if not self._dragged:
-            if (event.globalPosition().toPoint() - self._drag_start).manhattanLength() < DRAG_THRESHOLD:
-                return
-            self._dragged = True
-            self.animator.stop()
-        pos = event.globalPosition() - self._drag_from
-        self.move(int(pos.x()), int(pos.y()))
+        self._pressed = event.button() == Qt.MouseButton.LeftButton
 
     def mouseReleaseEvent(self, event) -> None:
-        dragged, self._drag_from, self._dragged = self._dragged, None, False
-        if dragged:
-            self._commit_drag()
-
-    def _commit_drag(self) -> None:
-        """Новое место островка становится его постоянным положением."""
-        screen = QGuiApplication.screenAt(self.geometry().center()) or self._screen
-        geo = self.geometry()
-        top = geo.bottom() + 1 - self._row_h - 2 * MARGIN if self._bottom else geo.top()
-        patch = {"position": "custom", "custom_pos": [geo.left() + geo.width() // 2, top],
-                 "screen": screen.name() if screen is not None else ""}
-        self._cfg.update(patch)
-        self._screen = screen
-        self._reanchor()
-        self.position_changed.emit(patch)
+        pressed, self._pressed = self._pressed, False
+        if pressed and self.mini.isVisible() and self.rect().contains(event.position().toPoint()):
+            self._open_main()
 
     # --- файлы: перетаскивание на островок -------------------------------------------
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-POSITIONS = ("top", "top-left", "top-right", "bottom", "custom")
+POSITIONS = ("top", "top-left", "top-right")      # островок закреплён у верхнего края
 THEMES = ("graphite", "black", "sirius")
 VISUALIZERS = ("bars", "wave", "pulse")
 
@@ -17,6 +17,7 @@ ISLAND_DEFAULTS: dict[str, Any] = {
     "enabled": True,             # живой островок; False — прежняя полоска без событий и расширенных режимов
     "show_always": False,        # показывать и при открытом главном окне (иначе только в компактном режиме)
     "position": "top",
+    "mini": True,                # свёрнутый островок — маленькая капсула: время, градусы или эквалайзер
     "custom_pos": None,          # [x центра, y края] после перетаскивания
     "screen": "",                # имя экрана; пусто — экран главного окна
     "width": 860,
@@ -50,6 +51,8 @@ ISLAND_DEFAULTS: dict[str, Any] = {
     "pomodoro_rounds": 4,
     "pomodoro_restore": True,    # восстанавливать таймер после перезапуска
     "actions": True,
+    "weather": True,             # вкладка погоды и градусы в мини-капсуле (нужен город)
+    "weather_city": "",          # пусто — запросов в интернет нет
     "custom_actions": [],        # [{"title": ..., "target": путь или http(s)-адрес}]
 }
 

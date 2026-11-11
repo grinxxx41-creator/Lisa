@@ -1,5 +1,13 @@
 """Цвета, темы и таблица стилей SIRIUS.
 
+Смена темы на лету — заготовка (LIVE_SWITCH = False). Что уже есть:
+  set_theme(name) — меняет палитру, таблицу стилей приложения и рассылает notifier().changed;
+  виджет подписывается: styles.notifier().changed.connect(self.apply_theme) и в apply_theme()
+  перестраивает то, что зависит от флагов темы (NAV_SIDE, DOT_MATRIX, SHOW_AVATAR, ISLAND_IOS).
+Чтобы виджет перекрашивался сам, он должен читать цвет в момент рисования — styles.CYAN,
+а не запоминать его при импорте (from interface.styles import CYAN). Какие модули ещё запоминают,
+показывает tools/theme_audit.py; пока такие есть, LIVE_SWITCH остаётся False и тема меняется перезапуском.
+
 Тема выбирается один раз при запуске: main.py вызывает apply_theme() до загрузки остальных
 модулей интерфейса, потому что они берут цвета отсюда при импорте. Смена темы в настройках
 поэтому вступает в силу после перезапуска SIRIUS.
@@ -7,7 +15,12 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import QObject, Signal
+
 DEFAULT_THEME = "sirius"
+# Заготовка: True — тема из настроек применяется сразу (set_theme), без перезапуска.
+# Включать, когда tools/theme_audit.py перестанет находить модули с запомненными цветами.
+LIVE_SWITCH = False
 
 # название темы в настройках
 THEME_TITLES = (
@@ -34,6 +47,7 @@ _BASE = {
     "SHOW_AVATAR": True,     # аватар LISA в центре рабочей области
     "NAV_SIDE": False,       # значки панелей в вертикальной боковой панели, а не в верхней полосе
     "DOT_MATRIX": False,     # точечные (Dot Matrix) надписи и узоры
+    "ISLAND_IOS": False,     # островок как Dynamic Island: сплошная чёрная капсула без каймы и свечения
     "EXTRA": "",
 }
 
@@ -118,7 +132,7 @@ QLabel#emptyState { font-family: "Cascadia Mono", "Consolas", monospace; font-si
         "FONT_TITLE": '"SF Pro Display", "Segoe UI Variable Display", "Segoe UI", sans-serif',
         "GLASS_TOP": "#2C2C2E", "GLASS_BOTTOM": "#1C1C1E", "GLASS_ALPHA": (196, 214),
         "GLASS_SHEEN": 10, "PANEL_BORDER": "#FFFFFF", "PANEL_BORDER_ALPHA": 34, "PANEL_TOP_LINE": False,
-        "PANEL_RADIUS": 20, "BACKDROP": "glow", "SHOW_AVATAR": False,
+        "PANEL_RADIUS": 20, "BACKDROP": "glow", "SHOW_AVATAR": False, "ISLAND_IOS": True,
         "EXTRA": """
 QLabel#title { letter-spacing: 1px; color: #FFFFFF; }
 QPushButton { background: rgba(118, 118, 128, 0.30); border: 1px solid transparent; border-radius: 12px; }
@@ -243,6 +257,45 @@ QProgressBar#metricBarHigh::chunk {{ border-radius: 3px;
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {WARNING}, stop:1 {ERROR}); }}
 QComboBox QAbstractItemView {{ background: {BG_ALT}; selection-background-color: rgba({violet}, 0.45); }}
 {EXTRA}"""
+
+
+class ThemeNotifier(QObject):
+    """Сообщает работающим окнам, что тема сменилась (имя новой темы)."""
+
+    changed = Signal(str)
+
+
+_notifier: ThemeNotifier | None = None
+
+
+def notifier() -> ThemeNotifier:
+    global _notifier
+    if _notifier is None:
+        _notifier = ThemeNotifier()
+    return _notifier
+
+
+def set_theme(name) -> bool:
+    """Меняет тему работающего приложения. False — эта тема уже включена.
+
+    Палитра и таблица стилей меняются сразу; подписчики notifier().changed перестраивают своё;
+    все виджеты перерисовываются. Виджеты, запомнившие цвета при импорте, останутся прежними —
+    поэтому из настроек функция вызывается, только когда LIVE_SWITCH = True.
+    """
+    name = normalize_theme(name)
+    if name == THEME:
+        return False
+    apply_theme(name)
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is not None:
+        app.setStyleSheet(STYLE)
+    notifier().changed.emit(name)
+    if app is not None:
+        for widget in app.allWidgets():
+            widget.update()
+    return True
 
 
 def load_fonts(folder) -> list[str]:

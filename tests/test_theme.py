@@ -179,7 +179,7 @@ def test_main_window_keeps_top_navigation_in_default_theme(qt_app, tmp_path):
     win = MainWindow(tmp_path)
     try:
         win.show()
-        assert win.side_rail is None and win.control_bar.button("chat").isVisible()
+        assert win.side_rail.isHidden() and win.control_bar.button("chat").isVisible()
     finally:
         win.close()
 
@@ -201,3 +201,92 @@ def test_fade_in_removes_effect_when_done(qt_app):
     loop.exec()
     assert w.graphicsEffect() is None
     w.close()
+
+
+# --- заготовка смены темы на лету ---
+
+@pytest.fixture
+def live_theme(qt_app):
+    """set_theme на время теста; после — прежняя тема и прежняя таблица стилей приложения."""
+    sheet = qt_app.styleSheet()
+    yield styles.set_theme
+    styles.set_theme(styles.DEFAULT_THEME)
+    styles.apply_theme(styles.DEFAULT_THEME)
+    qt_app.setStyleSheet(sheet)
+
+
+def test_live_switch_is_off_by_default():
+    assert styles.LIVE_SWITCH is False, "пока не все модули перекрашиваются на лету, тема меняется перезапуском"
+
+
+def test_set_theme_updates_style_and_notifies(qt_app, live_theme):
+    seen = []
+    styles.notifier().changed.connect(seen.append)
+    try:
+        assert live_theme("sirius") is False and seen == [], "та же тема — ничего не происходит"
+        assert live_theme("ios") is True
+        assert styles.THEME == "ios" and styles.CYAN == "#0A84FF" and seen == ["ios"]
+        assert "#0A84FF" in qt_app.styleSheet()
+        assert live_theme("нет такой") is True and styles.THEME == "sirius" and seen == ["ios", "sirius"]
+    finally:
+        styles.notifier().changed.disconnect(seen.append)
+
+
+def test_main_window_follows_theme_on_the_fly(qt_app, tmp_path, live_theme):
+    from interface.main_window import MainWindow
+
+    win = MainWindow(tmp_path)
+    try:
+        win.resize(1100, 700)
+        win.show()
+        qt_app.processEvents()
+        bar = win.control_bar
+        assert win.side_rail.isHidden() and win.avatar.isVisible() and bar.title is bar.title_text
+        assert bar.title_text.isVisible() and bar.title_dots.isHidden() and win.settings_btn.isVisible()
+        city = win.centralWidget().pixmap().toImage().pixelColor(5, 5)
+
+        live_theme("nothing")
+        qt_app.processEvents()
+        assert win.side_rail.isVisible() and win.avatar.isHidden() and bar.title is bar.title_dots
+        assert bar.title_dots.isVisible() and bar.title_text.isHidden() and win.settings_btn.isHidden()
+        assert not bar.button("chat").isVisible() and not bar.hide_all_btn.isVisible()
+        dots = win.centralWidget().pixmap().toImage().pixelColor(5, 5)
+        assert dots != city and dots.blue() < 40, "фон окна перестроен под новую тему"
+        was_open = win.workspace.is_open("logs")
+        win.side_rail.button("logs").click()
+        assert win.workspace.is_open("logs") is not was_open
+
+        live_theme("sirius")
+        qt_app.processEvents()
+        assert win.side_rail.isHidden() and win.avatar.isVisible() and bar.button("chat").isVisible()
+        assert bar.button("logs").isChecked() is win.workspace.is_open("logs"), "обе навигации остаются согласованы"
+    finally:
+        win.close()
+
+
+def test_settings_keep_restart_until_live_switch_enabled(qt_app, tmp_path, live_theme, monkeypatch):
+    from interface.main_window import MainWindow
+
+    win = MainWindow(tmp_path)
+    try:
+        values = dict(win.settings, theme="ios")
+        win._apply_settings(values)
+        assert styles.THEME == "sirius" and "перезапуска" in win.statusBar().currentMessage()
+        monkeypatch.setattr(styles, "LIVE_SWITCH", True)
+        win._apply_settings(dict(values, theme="nothing"))
+        assert styles.THEME == "nothing" and "перезапуска" not in win.statusBar().currentMessage()
+        assert win.side_rail.isVisibleTo(win)
+    finally:
+        win.close()
+
+
+def test_theme_audit_lists_modules_that_capture_colours(tmp_path):
+    from tools import theme_audit
+
+    sample = tmp_path / "sample.py"
+    sample.write_text("from interface import styles\nfrom interface.styles import CYAN, rgb\n"
+                      "RADIUS = styles.PANEL_RADIUS\n\n\ndef paint():\n    return styles.CYAN\n", encoding="utf-8")
+    assert theme_audit.audit_file(sample) == (["CYAN"], [3]), "чтение внутри функции — это уже правильно"
+    found = theme_audit.audit()
+    assert "interface/workspace/side_rail.py" not in found and "interface/workspace/backdrop.py" not in found
+    assert all(names or lines for names, lines in found.values())

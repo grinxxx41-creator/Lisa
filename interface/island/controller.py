@@ -41,6 +41,7 @@ METER_MS = 40                 # уровень звука для визуали�
 LEVEL_TIMEOUT_MS = 1800
 MEDIA_POPUP_MS = 4000
 CONNECTIVITY_MS = 10_000
+WEATHER_MS = 20 * 60 * 1000       # погода обновляется раз в 20 минут, пока островок виден
 STALE_NOTE_SECONDS = 60
 
 
@@ -55,6 +56,7 @@ class IslandController(QObject):
     _notes_ready = Signal(object)
     _bridge_status = Signal(str, str)
     _connectivity_ready = Signal(object, object)
+    _weather_ready = Signal(object, str)   # ((место, погода) или None, причина ошибки)
 
     def __init__(self, base_dir: Path, settings: Any = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -87,6 +89,10 @@ class IslandController(QObject):
         self._clipboard_connected = False
         self._notes_hint = ""
         self._warned_winrt = False
+        self._weather = None
+        self._weather_hint = ""
+        self._weather_place: tuple | None = None     # (город из настроек, широта, долгота, название)
+        self._weather_busy = False
 
         self._pomo_timer = self._timer(1000, self._pomo_tick)
         self._events_timer = self._timer(EVENTS_IDLE_MS, self._poll_events)
@@ -95,11 +101,13 @@ class IslandController(QObject):
         self._save_timer = self._timer(1500, self._save, single=True)
         self._pump_timer = self._timer(350, self._pump_notes, single=True)
         self._media_pop_timer = self._timer(450, self._media_popup, single=True)
+        self._weather_timer = self._timer(WEATHER_MS, self._fetch_weather)
 
         self._media_ready.connect(self._on_media)
         self._notes_ready.connect(self._on_win_notes)
         self._bridge_status.connect(self._on_bridge_status)
         self._connectivity_ready.connect(self._on_connectivity)
+        self._weather_ready.connect(self._on_weather)
 
         self._load()
         self._sync_clipboard()
@@ -148,12 +156,14 @@ class IslandController(QObject):
         bar.states.changed.connect(self._on_state_changed)
         bar.states.transient_finished.connect(self._on_transient_finished)
         bar.media_view.command.connect(self._media_command)
+        bar.media_view.volume_changed.connect(self._set_volume)
+        bar.control.triggered.connect(self.run_action)
+        bar.weather_view.city_submitted.connect(self._set_city)
         bar.toast.dismissed.connect(self.dismiss_note)
         bar.notes_list.dismissed.connect(self.dismiss_note)
         bar.notes_list.cleared.connect(self.clear_notes)
         bar.hub.action_triggered.connect(self.run_action)
         tools = bar.tools
-        tools.actions.triggered.connect(self.run_action)
         tools.shelf.open_requested.connect(self._open_path)
         tools.shelf.reveal_requested.connect(self._reveal_path)
         tools.shelf.remove_requested.connect(self._remove_from_shelf)
@@ -182,13 +192,17 @@ class IslandController(QObject):
             return
         self.bar.set_media(self._media if self.cfg["media"] else None)
         self._refresh_actions()
+        self._refresh_weather()
         self._refresh_shelf()
         self._refresh_clipboard()
         self._refresh_pomodoro(force=True)
         self._refresh_notes()
 
     def apply_settings(self, raw: Any) -> None:
+        old_city = self.cfg["weather_city"].strip()
         self.cfg = normalize(raw)
+        if self.cfg["weather_city"].strip() != old_city or not self.cfg["weather"]:
+            self._weather, self._weather_hint, self._weather_place = None, "", None
         self.pomodoro.configure(self.cfg["pomodoro_work"], self.cfg["pomodoro_short"], self.cfg["pomodoro_long"],
                                 self.cfg["pomodoro_rounds"])
         if not self.cfg["pomodoro"] and self.pomodoro.state != IDLE:
@@ -221,6 +235,13 @@ class IslandController(QObject):
         self._active = active
         if not self.SYSTEM_SERVICES:
             return
+        if active and self._weather_wanted():
+            if not self._weather_timer.isActive():
+                self._weather_timer.start()
+            if self._weather is None or time.time() - self._weather.fetched > WEATHER_MS / 1000:
+                self._fetch_weather()
+        else:
+            self._weather_timer.stop()
         want_events = active and (self.cfg["indicators"] or self.cfg["lock_keys"])
         if want_events and not self._events_timer.isActive():
             self._volume = self._bright = self._locks = None      # первое чтение — без всплывающего индикатора
@@ -276,6 +297,8 @@ class IslandController(QObject):
                     changed = True
                     self._show_volume(*volume)
                 self._volume = volume
+                if self.bar is not None:
+                    self.bar.set_volume(*volume)
             if self._brightness is None:
                 from monitoring.win_system import Brightness
 
@@ -370,6 +393,8 @@ class IslandController(QObject):
         self._probing = False
         if self.bar is not None:
             self.bar.system_view.set_connectivity(wifi, bluetooth)
+            self.bar.set_action_active("wifi", bool(wifi is not None and wifi.connected))
+            self.bar.set_action_active("bluetooth", bool(bluetooth is not None and bluetooth.enabled))
 
     # --- состояния -------------------------------------------------------------------
 
@@ -387,6 +412,12 @@ class IslandController(QObject):
                 self._sys_timer.start()
         elif base_only:
             self._sys_timer.stop()
+        if state is IslandState.CONTROL and base_only and self.SYSTEM_SERVICES:
+            self._probe_connectivity()           # подсветка кнопок Wi-Fi и Bluetooth
+        if state is IslandState.MEDIA and base_only and self.SYSTEM_SERVICES:
+            self._push_volume()
+        if state is IslandState.WEATHER and base_only:
+            self._refresh_weather()
         if state is IslandState.NOTIFICATION and base_only:
             self.center.mark_read()
             self._drain_queue()
@@ -436,8 +467,7 @@ class IslandController(QObject):
     def _sync_meter(self) -> None:
         bar = self.bar
         want = (self.SYSTEM_SERVICES and self._active and bar is not None and self.cfg["visualizer"]
-                and self._media is not None and self._media.playing
-                and (bar.media_view.isVisible() or bar.media_chip.isVisible()))
+                and self._media is not None and self._media.playing and bar.isVisible())
         if want and not self._meter_timer.isActive():
             self._meter_timer.start()
         elif not want and self._meter_timer.isActive():
@@ -445,6 +475,89 @@ class IslandController(QObject):
             if bar is not None:
                 bar.media_view.visualizer.clear()
                 bar.mini_visualizer.clear()
+                bar.mini.visualizer.clear()
+
+    # --- громкость (шкала во вкладке «Медиа») ----------------------------------------
+
+    def _push_volume(self) -> None:
+        volume = self._ensure_audio().volume()
+        if self.bar is not None:
+            self.bar.set_volume(*(volume if volume is not None else (None, False)))
+
+    def _set_volume(self, percent: float) -> None:
+        """Пользователь подвинул шкалу громкости: меняем общую громкость Windows."""
+        if not self.SYSTEM_SERVICES:
+            return
+        audio = self._ensure_audio()
+        if not audio.set_volume(percent):
+            self.status_message.emit("Не удалось изменить громкость: устройство вывода недоступно")
+            return
+        muted = self._volume[1] if self._volume is not None else False
+        self._volume = (round(percent), muted)     # своё изменение не показываем всплывающим индикатором
+
+    # --- погода ----------------------------------------------------------------------
+
+    def _weather_wanted(self) -> bool:
+        return bool(self.cfg["weather"] and self.cfg["weather_city"].strip())
+
+    def _refresh_weather(self) -> None:
+        if self.bar is None:
+            return
+        if not self.cfg["weather"]:
+            self.bar.set_weather(None, "Погода выключена в настройках островка")
+            return
+        self.bar.set_weather(self._weather, self._weather_hint, self.cfg["weather_city"])
+
+    def _set_city(self, city: str) -> None:
+        """Город введён прямо во вкладке «Погода»: запоминаем его в настройках и запрашиваем погоду."""
+        city = city.strip()[:80]
+        if not city:
+            return
+        self.cfg["weather_city"] = city
+        self._weather, self._weather_place = None, None
+        self._weather_hint = f"Запрашиваю погоду: {city}…" if self.SYSTEM_SERVICES else ""
+        self.settings_patch.emit({"weather_city": city})
+        self._refresh_weather()
+        if self.SYSTEM_SERVICES and self._active:
+            self._weather_timer.start()
+            self._fetch_weather()
+
+    def _fetch_weather(self) -> None:
+        """Запрос в фоновом потоке; в сеть уходит только название города и его координаты."""
+        if not (self.SYSTEM_SERVICES and self._active and self._weather_wanted()) or self._weather_busy:
+            return
+        city = self.cfg["weather_city"].strip()
+        place = self._weather_place if self._weather_place and self._weather_place[0] == city else None
+        self._weather_busy = True
+
+        def work() -> None:
+            from monitoring import weather as service
+
+            try:
+                found = place or (city, *service.geocode(city))
+                self._weather_ready.emit((found, service.fetch(found[1], found[2], found[3] or city)), "")
+            except service.WeatherError as exc:
+                self._weather_ready.emit(None, str(exc))
+            except Exception:
+                log.exception("Погода: неожиданная ошибка")
+                self._weather_ready.emit(None, "Не удалось получить погоду")
+
+        threading.Thread(target=work, daemon=True, name="sirius-weather").start()
+
+    def _on_weather(self, payload, error: str) -> None:
+        self._weather_busy = False
+        if self._closed:
+            return
+        if payload is not None:
+            place, weather = payload
+            if place[0] != self.cfg["weather_city"].strip():
+                self._fetch_weather()              # город сменили, пока шёл запрос
+                return
+            self._weather_place, self._weather, self._weather_hint = place, weather, ""
+        else:
+            log.warning("Погода: %s", error)
+            self._weather_hint = error             # прежние данные остаются на экране с пояснением
+        self._refresh_weather()
 
     def _poll_meter(self) -> None:
         level = self._ensure_audio().peak()
@@ -684,8 +797,8 @@ class IslandController(QObject):
     def _refresh_actions(self) -> None:
         if self.bar is not None:
             actions = self.actions()
-            self.bar.hub.set_actions(actions)
-            self.bar.tools.actions.set_actions(actions)
+            self.bar.hub.set_actions([a for a in actions if a.id not in quick.SETTINGS_PAGES])
+            self.bar.control.set_actions(actions)
 
     def run_action(self, action_id: str) -> None:
         action = next((a for a in self.actions() if a.id == action_id), None)
@@ -693,6 +806,8 @@ class IslandController(QObject):
             return
         if action.custom:
             ok, message = quick.launch_target(action.target)
+        elif action.id in quick.SETTINGS_PAGES:
+            ok, message = quick.open_settings_page(action.id)
         elif action.id == "explorer":
             ok, message = quick.open_explorer()
             message = "Проводник открыт" if ok else message
@@ -701,7 +816,7 @@ class IslandController(QObject):
             return
         log.info("Быстрое действие «%s»: %s", action.title, message)
         if self.bar is not None:
-            self.bar.tools.actions.set_status(message, ok)
+            self.bar.control.set_status(message, ok)
         self.status_message.emit(message)
 
     # --- завершение ------------------------------------------------------------------
@@ -712,7 +827,7 @@ class IslandController(QObject):
         self._save_timer.stop()
         self._save()
         self._closed = True
-        for timer in (self._pomo_timer, self._events_timer, self._meter_timer, self._sys_timer, self._pump_timer,
+        for timer in (self._weather_timer, self._pomo_timer, self._events_timer, self._meter_timer, self._sys_timer, self._pump_timer,
                       self._media_pop_timer):
             timer.stop()
         self._sync_clipboard()

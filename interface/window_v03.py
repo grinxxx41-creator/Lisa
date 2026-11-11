@@ -125,6 +125,8 @@ class WindowV03Mixin:
         if enabled == self._heavy:
             return
         self._heavy = enabled
+        if self.compact_bar is not None:
+            self.compact_bar.set_action_active("heavy", enabled)
         if enabled:
             if self._generating and self._worker is not None:
                 self._worker.stop()
@@ -186,6 +188,7 @@ class WindowV03Mixin:
             bar.voice_toggled.connect(self._set_voice)
             bar.avatar_clicked.connect(self._on_avatar_clicked)
             self.compact_bar = bar
+            bar.set_action_active("heavy", self._heavy)
             if self.island is not None:
                 self.island.attach(bar)
         return self.compact_bar

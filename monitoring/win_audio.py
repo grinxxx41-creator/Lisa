@@ -100,6 +100,13 @@ class AudioEndpoint:
             return None
         return max(0.0, min(100.0, level.value * 100.0)), bool(muted.value)
 
+    def set_volume(self, percent: float) -> bool:
+        """Задаёт общую громкость устройства вывода, 0..100. False — устройство недоступно."""
+        if self._volume is None:
+            return False
+        level = c_float(max(0.0, min(1.0, float(percent) / 100.0)))
+        return _call(self._volume, 7, level, None, argtypes=(c_float, c_void_p)) >= 0
+
     def peak(self) -> float | None:
         """Пиковый уровень воспроизводимого звука 0..1 или None."""
         if self._meter is None:
