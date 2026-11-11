@@ -9,7 +9,7 @@ from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QRadialGradient
 from PySide6.QtWidgets import QAbstractButton, QApplication, QHBoxLayout, QLabel, QWidget
 
-from interface.styles import CYAN, TEXT_SECONDARY, WHITE
+from interface.styles import CYAN, ERROR, TEXT_SECONDARY, WHITE
 
 TITLEBAR_HEIGHT = 34
 
@@ -77,7 +77,8 @@ class TitleButton(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         hover = self.underMouse()
         if hover:
-            bg = QColor(255, 85, 85, 60) if self.kind == "close" else QColor(54, 191, 255, 40)
+            bg = QColor(ERROR if self.kind == "close" else CYAN)
+            bg.setAlpha(60 if self.kind == "close" else 40)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(bg)
             p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 6, 6)

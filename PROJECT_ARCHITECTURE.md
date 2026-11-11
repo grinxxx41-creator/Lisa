@@ -220,3 +220,46 @@ interface/
 Поток данных: SystemInfoWorker → MonitorService → (MetricsHistory, SessionStats, AlertMonitor)
 → сигналы updated / alert / generation → SystemPanel, CompactBar, AvatarWidget.set_system_mood, MainWindow.
 Вопрос о компьютере: MainWindow._on_send → system_context() → build_messages(extra_system=…).
+
+## Островок (Living Island)
+
+```
+island/                     логика без Qt
+  states.py                 IslandState, приоритеты временных состояний
+  settings.py               ISLAND_DEFAULTS, normalize (settings.json["island"])
+  notifications.py          NotificationCenter: очередь, приоритет, повторы, защита от спама
+  pomodoro.py               таймер по часам системы, snapshot/restore
+  clipboard.py              ClipboardHistory, looks_secret
+  shelf.py                  QuickShelf: только ссылки на файлы
+  actions.py                встроенные и свои действия, launch_target (os.startfile, без командной строки)
+monitoring/
+  win_audio.py              громкость и пиковый уровень звука (Core Audio через ctypes), только чтение
+  win_system.py             яркость (\\.\LCD), Caps/Num Lock, Wi-Fi (wlanapi), Bluetooth
+  winrt_bridge.py           поток asyncio: медиа GSMTC (события) и уведомления Windows (опрос раз в 3 с)
+storage/island_storage.py   storage/island.json: полка, Pomodoro, история буфера
+interface/
+  compact_bar.py            окно островка: строка капсулы (прежняя компактная полоска) + раскрываемая часть
+  island/state_manager.py   IslandStateManager: open / flash / pin / hold, сигнал changed
+  island/animator.py        геометрия окна, скругление, прозрачность
+  island/controller.py      IslandController: сервисы и данные → окно, уведомления, Pomodoro, буфер, полка
+  island/views.py           NavBar, HubView (LISA), MediaView, SystemView, NoteToast, NoteList, IndicatorView
+  island/tools_views.py     ToolsView: ShelfPage, ClipboardPage, PomodoroPage, ActionsPage
+  island/widgets.py         значки, кнопки, шкалы, Gauge, Visualizer, Cover
+  island/settings_tab.py    вкладка «Островок» окна настроек
+```
+
+Правило: виджеты и сервисы не меняют интерфейс островка напрямую. Они вызывают
+`states.open(состояние)` (действие пользователя) или `states.flash(состояние, …)` (событие), а окно
+подписано на `states.changed` и само выбирает экран, высоту и анимацию. Событие с меньшим
+приоритетом не вытесняет более важное; после события возвращается прежнее состояние.
+
+Время жизни: контроллер создаётся в `WindowV03Mixin._setup_island` и живёт всё время работы SIRIUS —
+Pomodoro, история буфера и журнал уведомлений не зависят от окна. Окно создаётся при первом показе
+(`_ensure_compact_bar`). Поток WinRT, опрос громкости, яркости и клавиш, уровень звука работают
+только пока островок на экране (`IslandController._set_active`).
+
+Потоки: `sirius-winrt` (asyncio, результаты приходят в поток интерфейса сигналами Qt) и короткий
+`sirius-connectivity` (Wi-Fi и Bluetooth, пока открыт режим «Система»). Остальное — таймеры Qt.
+
+Данные мониторинга островок получает от MonitorService через `MainWindow._on_monitor_update`
+(`island.on_snapshot`, `compact_bar.set_metrics`); своего сбора CPU/GPU/RAM у него нет.

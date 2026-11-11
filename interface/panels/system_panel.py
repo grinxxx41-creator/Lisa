@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from interface.charts import CoreBars, LineChart, format_rate
+from interface.motion import animate_tabs
 from interface.styles import CYAN, TEAL, TEXT_SECONDARY, VIOLET, WARNING
 from interface.workers import SystemInfoWorker
 from interface.workspace.panel_titlebar import StatusDot
@@ -56,6 +57,7 @@ class SystemPanel(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setObjectName("sysTabs")
         self.tabs.setDocumentMode(True)
+        animate_tabs(self.tabs)
         outer.addWidget(self.tabs)
 
         self.tabs.addTab(self._build_overview(), "Обзор")

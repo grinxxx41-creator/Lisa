@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QTimer, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QCheckBox, QInputDialog, QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget,
+    QCheckBox, QHBoxLayout, QInputDialog, QMainWindow, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
 from core.ai_engine import AIEngine
@@ -23,6 +23,7 @@ from interface.panels.logs_panel import LogsPanel
 from interface.panels.system_panel import SystemPanel
 from interface.panels.terminal_panel import TerminalPanel
 from interface.settings_panel import SettingsDialog
+from interface import styles
 from interface.styles import CYAN, ERROR, SUCCESS, TEXT_SECONDARY, WARNING
 from interface.boot_overlay import BootOverlay
 from interface.monitor_service import MonitorService
@@ -31,6 +32,7 @@ from interface.workers import BOOT_STAGES, BootWorker, GenerationWorker, PullWor
 from interface.workspace.backdrop import WorkspaceBackdrop
 from interface.workspace.control_bar import ControlBar
 from interface.workspace.panel_registry import PanelRegistry, PanelSpec
+from interface.workspace.side_rail import SideRail
 from interface.workspace.workspace_canvas import WorkspaceCanvas
 from interface.workspace.workspace_manager import WorkspaceManager
 from core.title_generator import DEFAULT_TITLE
@@ -148,8 +150,19 @@ class MainWindow(WindowV03Mixin, QMainWindow):
         self.canvas = WorkspaceCanvas()
         self.canvas.set_backdrop(central)
         self.avatar = AvatarWidget(self._resolve("resources/images/lisa.png"))
-        self.canvas.set_avatar(self.avatar)
-        root.addWidget(self.canvas, 1)
+        # в темах без аватара виджет остаётся (он хранит состояние LISA), но не показывается
+        self.canvas.set_avatar(self.avatar, visible=styles.SHOW_AVATAR)
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(8)
+        self.side_rail: SideRail | None = None
+        if styles.NAV_SIDE:      # значки панелей — в боковой панели, верхняя полоса остаётся для статуса и действий
+            self.side_rail = SideRail([(s.panel_id, s.title, s.tooltip) for s in self.panel_registry.specs()])
+            self.control_bar.set_nav_visible(False)
+            self.settings_btn.hide()
+            body.addWidget(self.side_rail)
+        body.addWidget(self.canvas, 1)
+        root.addLayout(body, 1)
         self.workspace = WorkspaceManager(self.canvas, self.panel_registry, self)
 
         self.setCentralWidget(central)
@@ -180,6 +193,8 @@ class MainWindow(WindowV03Mixin, QMainWindow):
     def _sync_control_bar(self) -> None:
         for panel_id in self.panel_registry.ids():
             self.control_bar.set_panel_open(panel_id, self.workspace.is_open(panel_id))
+            if self.side_rail is not None:
+                self.side_rail.set_panel_open(panel_id, self.workspace.is_open(panel_id))
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -197,6 +212,11 @@ class MainWindow(WindowV03Mixin, QMainWindow):
         self.control_bar.toggle_panel.connect(self.workspace.toggle)
         self.control_bar.hide_all_requested.connect(self.workspace.hide_all)
         self.control_bar.reset_layout_requested.connect(self.workspace.reset_layout)
+        if self.side_rail is not None:
+            self.side_rail.toggle_panel.connect(self.workspace.toggle)
+            self.side_rail.hide_all_requested.connect(self.workspace.hide_all)
+            self.side_rail.reset_layout_requested.connect(self.workspace.reset_layout)
+            self.side_rail.settings_requested.connect(self._open_settings)
         self.workspace.panels_changed.connect(self._sync_control_bar)
         self.history.new_chat.connect(self._new_chat)
         self.history.open_chat.connect(self._open_chat)
@@ -681,6 +701,7 @@ class MainWindow(WindowV03Mixin, QMainWindow):
         self._check_ollama(try_start=False)
         if dlg.exec() == SettingsDialog.DialogCode.Accepted:
             self._apply_settings(dlg.values())
+            self._apply_island_cleanup(dlg.island_tab)
             if dlg.layout_reset:
                 self.workspace.reset_layout()
                 self._save_settings()
@@ -704,6 +725,7 @@ class MainWindow(WindowV03Mixin, QMainWindow):
         self.voice.set_style(VoiceStyle.from_settings(values))
 
     def _apply_settings(self, values: dict) -> None:
+        theme_changed = styles.normalize_theme(values.get("theme")) != styles.THEME
         self.settings = values
         if (values["model_name"] != self.models.model_name
                 or values["ollama_url"].rstrip("/") != self.models.base_url):
@@ -714,13 +736,15 @@ class MainWindow(WindowV03Mixin, QMainWindow):
         self.engine.model_name = values["model_name"]
         self.monitor.model_name = values["model_name"]
         self._apply_monitor_settings(values)
+        self._apply_island_settings(values)
         self._sync_autostart(values.get("autostart", False))
         self._apply_voice_runtime(values)
         self._save_settings()
         if values["voice_enabled"] != self.voice_switch.isChecked():
             self._set_voice(bool(values["voice_enabled"]))
         self._check_ollama(try_start=False)
-        self.statusBar().showMessage("Настройки сохранены")
+        self.statusBar().showMessage("Настройки сохранены. Новая тема появится после перезапуска SIRIUS"
+                                     if theme_changed else "Настройки сохранены")
 
     # --- завершение ---------------------------------------------------------
 

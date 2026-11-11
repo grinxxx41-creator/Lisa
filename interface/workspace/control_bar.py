@@ -5,6 +5,9 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
 
+from interface import styles
+from interface.dotmatrix import DotLabel
+
 
 class ControlBar(QFrame):
     toggle_panel = Signal(str)
@@ -21,8 +24,12 @@ class ControlBar(QFrame):
         layout.setContentsMargins(14, 4, 8, 4)
         layout.setSpacing(4)
 
-        title = QLabel("SIRIUS")
-        title.setObjectName("title")
+        if styles.DOT_MATRIX:
+            title = DotLabel("SIRIUS", dot=2.4, gap=1.2, color=styles.WHITE)
+        else:
+            title = QLabel("SIRIUS")
+            title.setObjectName("title")
+        self.title = title
         layout.addWidget(title)
         layout.addSpacing(12)
 
@@ -65,6 +72,11 @@ class ControlBar(QFrame):
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         return btn
+
+    def set_nav_visible(self, visible: bool) -> None:
+        """Скрывает кнопки панелей, «Скрыть» и «Сброс»: в темах с боковой навигацией они живут в SideRail."""
+        for btn in (*self._buttons.values(), self.hide_all_btn, self.reset_btn):
+            btn.setVisible(visible)
 
     def add_right_widget(self, widget: QWidget) -> None:
         self._right.addWidget(widget)

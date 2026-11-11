@@ -11,17 +11,24 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QFrame, QLayout, QVBoxLayout, QWidget
 
+from interface import styles
 from interface.workspace.panel_layout import COLLAPSED_HEIGHT, Rect, clamp_rect
 from interface.workspace.panel_titlebar import PanelTitleBar
 
 RESIZE_MARGIN = 6     # ширина зоны изменения размера у краёв
 CORNER = 16           # размер угловой зоны
-RADIUS = 12
+RADIUS = styles.PANEL_RADIUS
 SHADOW = 18           # насколько тень выходит за границы панели (рисует WorkspaceCanvas)
-GLASS_ALPHA_TOP = 120     # прозрачность «стекла» панели поверх фона-города (0 — прозрачно, 255 — сплошное)
-GLASS_ALPHA_BOTTOM = 150
+GLASS_ALPHA_TOP = styles.GLASS_ALPHA[0]     # прозрачность «стекла» панели поверх фона-города (0 — прозрачно, 255 — сплошное)
+GLASS_ALPHA_BOTTOM = styles.GLASS_ALPHA[1]
 
 _LEFT, _RIGHT, _BOTTOM = 1, 2, 4
+
+
+def _tone(color: str, alpha: int) -> QColor:
+    c = QColor(color)
+    c.setAlpha(alpha)
+    return c
 
 
 class FloatingPanel(QFrame):
@@ -290,29 +297,32 @@ class FloatingPanel(QFrame):
             p.setClipPath(path)
             paint_background(p, QRectF(self.rect()), QRectF(self.geometry()))
             p.restore()
-            top, bottom = QColor(16, 24, 52, GLASS_ALPHA_TOP), QColor(8, 12, 30, GLASS_ALPHA_BOTTOM)
+            top, bottom = _tone(styles.GLASS_TOP, GLASS_ALPHA_TOP), _tone(styles.GLASS_BOTTOM, GLASS_ALPHA_BOTTOM)
         else:
-            top, bottom = QColor(18, 27, 48, 236), QColor(10, 15, 28, 232)
+            top, bottom = _tone(styles.GLASS_TOP, 236), _tone(styles.GLASS_BOTTOM, 232)
         fill = QLinearGradient(QPointF(0, 0), QPointF(0, r.height()))
         fill.setColorAt(0.0, top)
         fill.setColorAt(1.0, bottom)
         p.fillPath(path, fill)
         # лёгкий блик стекла сверху
         sheen = QLinearGradient(QPointF(0, 0), QPointF(0, min(r.height(), 90)))
-        sheen.setColorAt(0.0, QColor(160, 190, 255, 22))
-        sheen.setColorAt(1.0, QColor(160, 190, 255, 0))
+        sheen.setColorAt(0.0, _tone(styles.EDGE_SOFT, styles.GLASS_SHEEN))
+        sheen.setColorAt(1.0, _tone(styles.EDGE_SOFT, 0))
         p.fillPath(path, sheen)
 
-        border = QColor(54, 191, 255, 150) if self._active else QColor(170, 195, 255, 62)
+        border = (_tone(styles.CYAN, 150) if self._active
+                  else _tone(styles.PANEL_BORDER, styles.PANEL_BORDER_ALPHA))
         p.setPen(QPen(border, 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(path)
 
+        if not styles.PANEL_TOP_LINE:
+            return
         # тонкая светящаяся линия по верхнему краю
         line = QLinearGradient(QPointF(r.left(), 0), QPointF(r.right(), 0))
-        edge = QColor(54, 191, 255, 0)
+        edge = _tone(styles.CYAN, 0)
         line.setColorAt(0.0, edge)
-        mid = QColor(54, 191, 255, 170 if self._active else 70)
+        mid = _tone(styles.CYAN, 170 if self._active else 70)
         line.setColorAt(0.5, mid)
         line.setColorAt(1.0, edge)
         p.setPen(QPen(line, 1.2))

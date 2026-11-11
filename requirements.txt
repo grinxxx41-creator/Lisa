@@ -8,3 +8,12 @@ numpy>=1.24
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
 torch>=2.1
 Pygments>=2.15
+# Островок: музыка (GSMTC) и уведомления Windows. Без этих пакетов островок работает без них.
+winrt-runtime>=4.0
+winrt-Windows.Media.Control
+winrt-Windows.Foundation
+winrt-Windows.Foundation.Collections
+winrt-Windows.Storage.Streams
+winrt-Windows.UI.Notifications
+winrt-Windows.UI.Notifications.Management
+winrt-Windows.ApplicationModel

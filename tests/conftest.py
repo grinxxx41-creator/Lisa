@@ -51,3 +51,11 @@ def _no_real_autostart(monkeypatch):
 
     monkeypatch.setattr(Autostart, "is_enabled", lambda self: False)
     monkeypatch.setattr(Autostart, "set_enabled", lambda self, enabled: True)
+
+
+@pytest.fixture(autouse=True)
+def _no_island_system_services(monkeypatch):
+    """Островок в тестах не обращается к Windows: без потока WinRT, звуковых устройств и опроса клавиш."""
+    from interface.island.controller import IslandController
+
+    monkeypatch.setattr(IslandController, "SYSTEM_SERVICES", False)

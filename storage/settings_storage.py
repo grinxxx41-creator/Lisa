@@ -27,6 +27,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "voice_speed": 1.0,       # множитель скорости речи (до v0.2.3 по умолчанию было 1.2 — слишком быстро)
     "voice_pitch": 4.0,       # v0.2.3: высота голоса, % (−8..+12)
     "voice_softness": 60,     # v0.2.3: мягкость тембра, 0..100
+    "theme": "nothing",       # тема оформления: interface/styles.THEMES (меняется после перезапуска)
     "window_width": 1280,
     "window_height": 800,
     # v0.2: расположение панелей рабочего пространства (координаты, размеры, видимость, порядок
@@ -39,6 +40,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "alert_thresholds": {},     # переопределения порогов monitoring.alerts.DEFAULT_THRESHOLDS
     "close_to_tray": False,     # закрытие окна сворачивает SIRIUS в трей (модель остаётся в памяти)
     "autostart": False,         # запуск вместе с Windows (HKCU\...\Run)
+    # Островок (Living Island): развитие компактного режима. Пустой словарь — значения по умолчанию.
+    # Содержимое проверяет island/settings.normalize.
+    "island": {},
 }
 
 

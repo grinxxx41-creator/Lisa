@@ -103,10 +103,16 @@ def main() -> int:
         return 0
 
     try:
-        from interface.main_window import MainWindow
-        from interface.styles import STYLE
+        # тема задаётся до загрузки окна: модули интерфейса берут цвета при импорте
+        from interface import styles
+        from storage.settings_storage import SettingsStorage
 
-        app.setStyleSheet(STYLE)
+        theme = styles.apply_theme(SettingsStorage(BASE_DIR / "storage" / "settings.json").load().get("theme"))
+        log.info("Тема оформления: %s", theme)
+        log.info("Шрифты проекта: %s", ", ".join(styles.load_fonts(BASE_DIR / "resources" / "fonts")) or "нет")
+        from interface.main_window import MainWindow
+
+        app.setStyleSheet(styles.STYLE)
         window = MainWindow(BASE_DIR)
     except Exception as exc:
         log.exception("Ошибка запуска главного окна")

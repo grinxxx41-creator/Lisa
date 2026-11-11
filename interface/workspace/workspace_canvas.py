@@ -31,12 +31,13 @@ class WorkspaceCanvas(QWidget):
         self._backdrop = backdrop
         self.update()
 
-    def set_avatar(self, avatar: QWidget) -> None:
+    def set_avatar(self, avatar: QWidget, visible: bool = True) -> None:
+        """visible=False — тема без аватара в центре: виджет остаётся (состояния LISA), но скрыт."""
         self._avatar = avatar
         avatar.setParent(self)
         avatar.lower()
         self._place_avatar()
-        avatar.show()
+        avatar.setVisible(visible)
 
     def avatar(self) -> QWidget | None:
         return self._avatar

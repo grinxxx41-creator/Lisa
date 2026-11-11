@@ -11,6 +11,7 @@ import logging
 
 from PySide6.QtCore import QObject, Signal
 
+from interface.motion import fade_in
 from interface.workspace.floating_panel import FloatingPanel
 from interface.workspace.panel_layout import (
     DEFAULT_PRESET, DEFAULT_VISIBLE, PanelState, Rect, WorkspaceState, anchor_rect, default_layout, parse_state,
@@ -100,6 +101,7 @@ class WorkspaceManager(QObject):
         if activate:
             self.activate(panel_id)
         if was_hidden:
+            fade_in(panel)
             self._notify_content(panel_id)
             self.panels_changed.emit()
             self.layout_changed.emit()

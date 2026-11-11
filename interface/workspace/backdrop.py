@@ -14,6 +14,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPixmap, QRadialGradient
 from PySide6.QtWidgets import QWidget
 
+from interface import styles
+
 SEED = 20261107
 _WINDOW_COLORS = ((86, 150, 255), (150, 112, 255), (96, 206, 255), (196, 120, 255), (255, 196, 120))
 _NEON = ((121, 91, 255), (54, 191, 255), (230, 90, 220), (61, 220, 200))
@@ -170,6 +172,55 @@ def render_city(width: int, height: int, dpr: float = 1.0, seed: int = SEED) -> 
     return pix
 
 
+def _blank(width: int, height: int, dpr: float, color: str) -> tuple[QPixmap, QPainter, int, int]:
+    w, h = max(width, 1), max(height, 1)
+    pix = QPixmap(int(w * dpr), int(h * dpr))
+    pix.setDevicePixelRatio(dpr)
+    pix.fill(QColor(color))
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    return pix, p, w, h
+
+
+def render_dots(width: int, height: int, dpr: float = 1.0) -> QPixmap:
+    """Фон темы Nothing: чёрное поле и ровная сетка точек, ярче к центру."""
+    pix, p, w, h = _blank(width, height, dpr, styles.BG)
+    step, cx, cy, reach = 16, w / 2, h / 2, max(w, h) * 0.62
+    for iy in range(h // step + 2):
+        for ix in range(w // step + 2):
+            x, y = ix * step + 4.0, iy * step + 4.0
+            dist = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 / reach
+            p.setBrush(_rgba((255, 255, 255), int(78 - 52 * min(dist, 1.0))))
+            p.drawEllipse(QPointF(x, y), 1.1, 1.1)
+    p.end()
+    return pix
+
+
+def render_glow(width: int, height: int, dpr: float = 1.0) -> QPixmap:
+    """Фон темы iPhone: чёрное поле и несколько мягких цветных пятен, как на обоях iOS."""
+    pix, p, w, h = _blank(width, height, dpr, styles.BG)
+    for cx, cy, rad, color, alpha in ((0.18, 0.12, 0.55, styles.CYAN, 78), (0.88, 0.30, 0.50, styles.VIOLET, 84),
+                                      (0.62, 1.02, 0.60, "#BF5AF2", 62), (0.05, 0.95, 0.40, styles.TEAL, 40)):
+        tone = QColor(color)
+        g = QRadialGradient(QPointF(w * cx, h * cy), max(w, h) * rad)
+        g.setColorAt(0.0, _rgba((tone.red(), tone.green(), tone.blue()), alpha))
+        g.setColorAt(1.0, _rgba((tone.red(), tone.green(), tone.blue()), 0))
+        p.setBrush(g)
+        p.drawRect(QRectF(0, 0, w, h))
+    p.end()
+    return pix
+
+
+def render_backdrop(width: int, height: int, dpr: float = 1.0) -> QPixmap:
+    """Фон окна для текущей темы (interface.styles.BACKDROP)."""
+    if styles.BACKDROP == "dots":
+        return render_dots(width, height, dpr)
+    if styles.BACKDROP == "glow":
+        return render_glow(width, height, dpr)
+    return render_city(width, height, dpr)
+
+
 class WorkspaceBackdrop(QWidget):
     """Центральный виджет окна: рисует фон-город под панелью управления и рабочей областью."""
 
@@ -189,7 +240,7 @@ class WorkspaceBackdrop(QWidget):
         return float(self.devicePixelRatioF()) or 1.0
 
     def _rebuild(self) -> None:
-        self._pixmap = render_city(self.width(), self.height(), self._dpr())
+        self._pixmap = render_backdrop(self.width(), self.height(), self._dpr())
         self.update()
 
     def pixmap(self) -> QPixmap:

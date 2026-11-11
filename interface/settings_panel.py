@@ -12,6 +12,9 @@ from PySide6.QtWidgets import (
 )
 
 from core.model_manager import MODEL_SIZE_HINT
+from interface.island.settings_tab import IslandSettingsTab
+from interface.motion import animate_tabs
+from interface.styles import THEME_TITLES, normalize_theme
 from voice.audio_effects import GENTLE, ORIGINAL, PITCH_RANGE, VoiceStyle
 
 
@@ -29,10 +32,13 @@ class SettingsDialog(QDialog):
 
         root = QVBoxLayout(self)
         self.tabs = QTabWidget()
+        animate_tabs(self.tabs)
         self.tabs.addTab(self._build_ai_tab(), "AI")
         self.tabs.addTab(self._build_voice_tab(), "Голос")
         self.tabs.addTab(self._build_interface_tab(), "Интерфейс")
         self.tabs.addTab(self._build_monitoring_tab(), "Мониторинг")
+        self.island_tab = IslandSettingsTab(self._settings.get("island"))
+        self.tabs.addTab(self.island_tab, "Островок")
         root.addWidget(self.tabs)
 
         buttons = QHBoxLayout()
@@ -147,6 +153,16 @@ class SettingsDialog(QDialog):
     def _build_interface_tab(self) -> QWidget:
         w = QWidget()
         form = QFormLayout(w)
+        self.theme_combo = QComboBox()
+        for theme_id, theme_title in THEME_TITLES:
+            self.theme_combo.addItem(theme_title, theme_id)
+        self.theme_combo.setCurrentIndex(max(0, self.theme_combo.findData(normalize_theme(self._settings.get("theme")))))
+        form.addRow("Тема:", self.theme_combo)
+        theme_hint = QLabel("Тема меняет всё окно и островок и применяется после перезапуска SIRIUS. "
+                            "В темах Nothing и iPhone аватара LISA в центре нет.")
+        theme_hint.setObjectName("secondary")
+        theme_hint.setWordWrap(True)
+        form.addRow(theme_hint)
         self.width_spin = QSpinBox()
         self.width_spin.setRange(900, 3840)
         self.width_spin.setValue(int(self._settings["window_width"]))
@@ -266,6 +282,7 @@ class SettingsDialog(QDialog):
             "voice_engine": self.engine_combo.currentData(),
             "voice_speaker": self.speaker_combo.currentData(),
             "silero_model_path": self._settings.get("silero_model_path", "resources/voices/silero_v4_ru.pt"),
+            "theme": self.theme_combo.currentData(),
             "window_width": self.width_spin.value(),
             "window_height": self.height_spin.value(),
             "alerts_enabled": self.alerts_check.isChecked(),
@@ -273,6 +290,7 @@ class SettingsDialog(QDialog):
             "alert_thresholds": {k: float(s.value()) for k, s in self.threshold_spins.items()},
             "close_to_tray": self.tray_check.isChecked(),
             "autostart": self.autostart_check.isChecked(),
+            "island": self.island_tab.values(),
         })
         return result
 

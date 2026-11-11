@@ -21,3 +21,6 @@ resources/voices/*.pt
 # ярлык запуска (полные пути этого компьютера) и замок единственного экземпляра
 *.lnk
 storage/sirius.lock
+
+# данные островка: полка, Pomodoro, история буфера обмена
+storage/island.json
